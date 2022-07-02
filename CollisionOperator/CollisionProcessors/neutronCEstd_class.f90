@@ -495,7 +495,7 @@ contains
       nucIdx = self % aceData % intMapDBRCnucs % get(nucIdx)
       !print *, "New nucIdx", nucIdx
       ! set temp majorant
-      TmajXS = self % aceData % updateTempMajorantXS(p % E, kT, A, nucIdx, self % minE)
+      TmajXS = self % aceData % updateTempMicroMajorantXS(p % E, kT, A, nucIdx, self % minE)
       !print *, "Tmaj = ",TmajXS
       ! Reassign pointer for the 0K nuclide
       self % aceNuc => aceNeutronNuclide_CptrCast(self % xsData % getNuclide(nucIdx))

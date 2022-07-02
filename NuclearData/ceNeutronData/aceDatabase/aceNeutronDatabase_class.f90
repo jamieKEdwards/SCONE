@@ -94,7 +94,8 @@ module aceNeutronDatabase_class
     procedure :: energyBounds
     procedure :: updateTotalMatXS
     procedure :: updateMajorantXS
-    procedure :: updateTempMajorantXS
+    procedure :: updateTempMicroMajorantXS
+    procedure :: updateTempMacroMajorantXS
     procedure :: updateMacroXSs
     procedure :: updateTotalNucXS
     procedure :: updateMicroXSs
@@ -430,7 +431,7 @@ contains
   !!   E [in]         -> Energy of neutron incident to target for which temp majorant needs to be found
   !!   TmajXS [out]   -> Temperature majorant
   !!
-  function updateTempMajorantXS(self, E, kT, A, nucIdx, sysMinE) result(TmajXs)
+  function updateTempMicroMajorantXS(self, E, kT, A, nucIdx, sysMinE) result(TmajXs)
     class(aceNeutronDatabase), intent(in) :: self
     !class(aceNeutronNuclide), pointer     :: nuc
     real(defReal), intent(in)             :: E
@@ -463,7 +464,53 @@ contains
 
 
 
-  end function updateTempMajorantXS
+  end function updateTempMicroMajorantXS
+
+  !!
+  !! Subroutine to update the temperature majorant in a given nuclide at given temperature
+  !! The function finds the upper and lower limits of the energy range from which the Tmaj is found.
+  !! These xs for these energies are found and all inbetween, the maximum is taken and returned as TmajXS
+  !!
+  !!Args:
+  !!   A [in]         -> Nuclide mass number
+  !!   kT [in]        -> Thermal energy of nuclide
+  !!   E [in]         -> Energy of neutron incident to target for which temp majorant needs to be found
+  !!   TmajXS [out]   -> Temperature majorant
+  !!
+  function updateTempMacroMajorantXS(self, E, kT, A, matIdx, sysMinE) result(TmajXs)
+    class(aceNeutronDatabase), intent(in) :: self
+    !class(aceNeutronNuclide), pointer     :: nuc
+    real(defReal), intent(in)             :: E
+    real(defReal), intent(in)             :: kT
+    real(defReal), intent(in)             :: A
+    real(defReal), intent(in)             :: sysMinE
+    integer(shortInt), intent(in)         :: nucIdx
+    real(defReal)                         :: TmajXS
+    real(defReal)                         :: E_upper, E_lower
+    real(defReal)                         :: alpha
+    logical(defBool)                      :: eCheck
+
+
+      ! Factor for varying the truncation factor for the maxwell boltzman distribuition
+      alpha = 4 * sqrt( kT / A )
+
+      ! Upper and lower energy limits within the highest cross section should be found
+      E_upper = (sqrt(E) + alpha)**2
+      E_lower = (sqrt(E) - alpha)**2
+
+      eCheck = (E <= E_upper) .and. (E_lower <= E)
+
+      ! avoid MB dist extending into energies outside system range
+      if (E_lower < sysMinE) then
+        E_lower = sysMinE
+      end if
+
+      ! use function in nuclide to find largest scattering xs in range of E_upper and E_lower
+      TmajXS = self % nuclides(nucIdx) % maxXSs(E_lower, E_upper)
+
+
+
+  end function updateTempMacroMajorantXS
 
 
 

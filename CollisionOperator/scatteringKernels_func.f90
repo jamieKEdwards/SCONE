@@ -195,9 +195,6 @@ contains
     ! In MCNP, alpha is p1
     alpha = 2.0 / (Y * sqrt(PI) + 2.0)
 
-    ! Call through temperature majorant
-    !call xsData % updateTempMajorantXS(E, kT, A)
-
     rejectionLoop: do
       !print*, "Rejected"
       ! Obtain random numbers
