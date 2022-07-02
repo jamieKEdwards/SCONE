@@ -5,6 +5,7 @@ module neutronCEstd_class
   use genericProcedures,             only : fatalError, rotateVector, numToChar
   use dictionary_class,              only : dictionary
   use RNG_class,                     only : RNG
+  use intMap_class,      only : intMap
 
   ! Particle types
   use particle_class,                only : particle, particleState, printType, P_NEUTRON
@@ -17,8 +18,12 @@ module neutronCEstd_class
   use nuclearDataReg_mod,            only : ndReg_getNeutronCE => getNeutronCE
   use nuclearDatabase_inter,         only : nuclearDatabase
   use ceNeutronDatabase_inter,       only : ceNeutronDatabase
+  use aceNeutronDatabase_class,      only : aceNeutronDatabase
+  use aceNeutronDatabase_class,      only : aceNeutronDatabase_CptrCast
   use ceNeutronMaterial_class,       only : ceNeutronMaterial, ceNeutronMaterial_CptrCast
   use ceNeutronNuclide_inter,        only : ceNeutronNuclide, ceNeutronNuclide_CptrCast
+  use aceNeutronNuclide_class,       only : aceNeutronNuclide_CptrCast
+  use aceNeutronNuclide_class,       only : aceNeutronNuclide
 
   ! Nuclear reactions
   use reactionHandle_inter,          only : reactionHandle
@@ -31,7 +36,7 @@ module neutronCEstd_class
   use neutronXsPackages_class,       only : neutronMicroXSs
 
   ! Scattering procedures
-  use scatteringKernels_func, only : asymptoticScatter, targetVelocity_constXS, &
+  use scatteringKernels_func, only : asymptoticScatter, targetVelocity_constXS, targetVelocity_DBRCXS, &
                                      asymptoticInelasticScatter
   implicit none
   private
@@ -68,12 +73,21 @@ module neutronCEstd_class
     class(ceNeutronDatabase), pointer, public :: xsData => null()
     class(ceNeutronMaterial), pointer, public :: mat    => null()
     class(ceNeutronNuclide),  pointer, public :: nuc    => null()
+    class(aceNeutronNuclide), pointer, public :: aceNuc => null()
+    !Attempt to link up aceNeutronDatabase
+    class(aceNeutronDatabase), pointer, public:: aceData=> null()
+
+
+
+
 
     !! Settings - private
     real(defReal) :: minE
     real(defReal) :: maxE
     real(defReal) :: tresh_E
     real(defReal) :: tresh_A
+    real(defReal) :: DBRCeMin
+    real(defReal) :: DBRCeMax
 
   contains
     ! Initialisation procedure
@@ -113,15 +127,21 @@ contains
     call dict % getOrDefault(self % maxE,'maxEnergy',20.0_defReal)
 
     ! Thermal scattering kernel thresholds
-    call dict % getOrDefault(self % tresh_E, 'energyTreshold', 400.0_defReal)
-    call dict % getOrDefault(self % tresh_A, 'massTreshold', 1.0_defReal)
+    call dict % getOrDefault(self % tresh_E, 'energyThreshold', 400.0_defReal)
+    call dict % getOrDefault(self % tresh_A, 'massThreshold', 1.0_defReal)
 
     ! Verify settings
     if( self % minE < ZERO ) call fatalError(Here,'-ve minEnergy')
     if( self % maxE < ZERO ) call fatalError(Here,'-ve maxEnergy')
     if( self % minE >= self % maxE) call fatalError(Here,'minEnergy >= maxEnergy')
-    if( self % tresh_E < 0) call fatalError(Here,' -ve energyTreshold')
-    if( self % tresh_A < 0) call fatalError(Here,' -ve massTreshold')
+    if( self % tresh_E < 0) call fatalError(Here,' -ve energyThreshold')
+    if( self % tresh_A < 0) call fatalError(Here,' -ve massThreshold')
+
+    !Read in DBRC max and min energy cut off
+    !if dict % isPresent(self % DBRC) then
+    ! maybe can go without the if function
+    call dict % getOrDefault(self % DBRCeMin,'DBRCeMin', (1.0E-8_defReal))
+    call dict % getOrDefault(self % DBRCeMax,'DBRCeMax', (200E-6_defReal))
 
   end subroutine init
 
@@ -255,7 +275,7 @@ contains
     class(particleDungeon),intent(inout) :: thisCycle
     class(particleDungeon),intent(inout) :: nextCycle
 
-    p % isDead =.true.
+    p % isDead = .true.
 
   end subroutine fission
 
@@ -413,6 +433,7 @@ contains
     class(particle), intent(inout)             :: p
     type(collisionData),intent(inout)          :: collDat
     type(elasticNeutronScatter), intent(in)    :: reac
+    !type(intMap), intent(in)                   :: map
     integer(shortInt)                          :: MT, nucIdx
     real(defReal)                              :: A, kT, mu
     real(defReal),dimension(3)                 :: V_n           ! Neutron velocity (vector)
@@ -420,7 +441,12 @@ contains
     real(defReal),dimension(3)                 :: dir_pre       ! Pre-collision direction
     real(defReal),dimension(3)                 :: dir_post      ! Post-collicion direction
     real(defReal),dimension(3)                 :: V_t, V_cm     ! Target and CM velocity
-    real(defReal)                              :: phi, dummy
+    real(defReal)                              :: phi, dummy    ! Target and CM velocity
+    real(defReal)                              :: TmajXS
+    logical(defBool)                           :: eRange, nucDBRC
+    character(100), parameter :: Here = 'Scatter From Moving (neutronCEstd_class.f90)'
+    !class(aceNeutronNuclide), pointer, public  :: aceNuc => null()
+
 
     ! Read data
     MT     = collDat % MT
@@ -432,8 +458,52 @@ contains
     dir_pre = p % dirGlobal()
     V_n     = dir_pre * sqrt(p % E)
 
-    ! Sample velocity of target
-    V_t = targetVelocity_constXS(p % E, dir_pre, A, kT, p % pRNG)
+
+    !cast pointer to aceNeutronNuclide
+    self % aceNuc => aceNeutronNuclide_CptrCast(self % xsData % getNuclide(collDat % nucIdx))
+    if(.not.associated(self % aceNuc)) call fatalError(Here, 'Failed to retive ACE Neutron Nuclide')
+
+    !cast pointer to aceNeutronDatabase
+    self % aceData => aceNeutronDatabase_CptrCast(self % xsData)
+    if(.not.associated(self % aceData)) call fatalError(Here, 'Failed to retive ACE Neutron Database')
+
+
+
+    ! Sample velocity of target with constant xs or with dbrc depending on switch and input files
+    ! dbrc requires energy less than emax, greater than emin and nuclide to be listed with 0K XS
+    eRange = ((p % E <= self % DBRCeMax) .and. (self % DBRCeMin <= p % E))
+
+
+    !print *, "eRange", eRange
+    !print *, "particle energy", p % E
+    !print *, "eRangeMaxinput", (self % DBRCeMax)
+    !print *, "eRangeMax", (p % E <= self % DBRCeMax)
+    !print *, "eRangeMin", (self % DBRCeMin <= p % E)
+
+
+
+    nucDBRC = ( self % aceNuc % isNucDBRC .and. self % aceData % hasDBRC)
+    !print *, "nuc and databse", nucDBRC
+    !print *, "Nuclide flag", self % aceNuc % isNucDBRC
+    !print *, "dataDBRC", self % aceData % hasDBRC
+
+    if (eRange .and. nucDBRC) then
+
+      !print *, "DBRC conditions being satisfied. "
+      !print *, nucIdx
+      !use int map of DBRC nuclides and to change nucIdx
+      nucIdx = self % aceData % intMapDBRCnucs % get(nucIdx)
+      !print *, "New nucIdx", nucIdx
+      ! set temp majorant
+      TmajXS = self % aceData % updateTempMajorantXS(p % E, kT, A, nucIdx, self % minE)
+      !print *, "Tmaj = ",TmajXS
+      ! Reassign pointer for the 0K nuclide
+      self % aceNuc => aceNeutronNuclide_CptrCast(self % xsData % getNuclide(nucIdx))
+      ! use dbrc (non constant cross section) to sample target velocity
+      V_t = targetVelocity_DBRCXS(self % aceNuc, p % E, dir_pre, A, kT, p % pRNG, TmajXS)
+    else
+      V_t = targetVelocity_constXS(p % E, dir_pre, A, kT, p % pRNG)
+    end if
 
     ! Calculate Centre-of-Mass velocity
     V_cm = (V_n + V_t *A)/(A+1)
