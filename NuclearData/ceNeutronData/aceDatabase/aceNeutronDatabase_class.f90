@@ -7,6 +7,7 @@ module aceNeutronDatabase_class
   use dictionary_class,  only : dictionary
   use RNG_class,         only : RNG
   use charMap_class,     only : charMap
+  use intMap_class,      only : intMap
 
   ! Nuclear Data Interfaces
   use nuclearDatabase_inter,        only : nuclearDatabase
@@ -52,7 +53,7 @@ module aceNeutronDatabase_class
   !! Sample input:
   !!   nuclearData {
   !!   handles {
-  !!   ce {type aceNeutronDatabase; ures <1 or 0>; aceLibrary <nuclear data path> ;} }
+  !!   ce {type aceNeutronDatabase; DBRC (92238.00 94240.00); ures <1 or 0>; aceLibrary <nuclear data path> ;} }
   !!
   !! Public Members:
   !!   nuclides  -> array of aceNeutronNuclides with data
@@ -74,6 +75,8 @@ module aceNeutronDatabase_class
 
     integer(shortInt),dimension(:),allocatable   :: nucToZaid
     logical(defBool)                             :: hasUrr
+    logical(defBool)                             :: hasDBRC
+    type(intMap)                                 :: intMapDBRCnucs
 
   contains
     ! nuclearData Procedures
@@ -84,12 +87,14 @@ module aceNeutronDatabase_class
     procedure :: getReaction
     procedure :: init
     procedure :: init_urr
+    procedure :: init_DBRC
     procedure :: activate
 
     ! ceNeutronDatabase Procedures
     procedure :: energyBounds
     procedure :: updateTotalMatXS
     procedure :: updateMajorantXS
+    procedure :: updateTempMajorantXS
     procedure :: updateMacroXSs
     procedure :: updateTotalNucXS
     procedure :: updateMicroXSs
@@ -415,11 +420,63 @@ contains
   end subroutine updateMicroXSs
 
   !!
+  !! Subroutine to update the temperature majorant in a given nuclide at given temperature
+  !! The function finds the upper and lower limits of the energy range from which the Tmaj is found.
+  !! These xs for these energies are found and all inbetween, the maximum is taken and returned as TmajXS
+  !!
+  !!Args:
+  !!   A [in]         -> Nuclide mass number
+  !!   kT [in]        -> Thermal energy of nuclide
+  !!   E [in]         -> Energy of neutron incident to target for which temp majorant needs to be found
+  !!   TmajXS [out]   -> Temperature majorant
+  !!
+  function updateTempMajorantXS(self, E, kT, A, nucIdx, sysMinE) result(TmajXs)
+    class(aceNeutronDatabase), intent(in) :: self
+    !class(aceNeutronNuclide), pointer     :: nuc
+    real(defReal), intent(in)             :: E
+    real(defReal), intent(in)             :: kT
+    real(defReal), intent(in)             :: A
+    real(defReal), intent(in)             :: sysMinE
+    integer(shortInt), intent(in)         :: nucIdx
+    real(defReal)                         :: TmajXS
+    real(defReal)                         :: E_upper, E_lower
+    real(defReal)                         :: alpha
+    logical(defBool)                      :: eCheck
+
+
+      ! Factor for varying the truncation factor for the maxwell boltzman distribuition
+      alpha = 4 * sqrt( kT / A )
+
+      ! Upper and lower energy limits within the highest cross section should be found
+      E_upper = (sqrt(E) + alpha)**2
+      E_lower = (sqrt(E) - alpha)**2
+
+      eCheck = (E <= E_upper) .and. (E_lower <= E)
+
+      ! avoid MB dist extending into energies outside system range
+      if (E_lower < sysMinE) then
+        E_lower = sysMinE
+      end if
+
+      ! use function in nuclide to find largest scattering xs in range of E_upper and E_lower
+      TmajXS = self % nuclides(nucIdx) % maxXSs(E_lower, E_upper)
+
+
+
+  end function updateTempMajorantXS
+
+
+
+
+
+
+
+  !!
   !! Initialise Database from dictionary and pointer to self
   !!
   !! See nuclearDatabase documentation for details
   !!
-  subroutine init(self, dict, ptr, silent )
+  subroutine init(self, dict, ptr, silent)
     class(aceNeutronDatabase), target, intent(inout) :: self
     class(dictionary), intent(in)                    :: dict
     class(nuclearDatabase), pointer, intent(in)      :: ptr
@@ -433,7 +490,8 @@ contains
     integer(shortInt)                                :: i, j, envFlag, nucIdx
     integer(shortInt)                                :: maxNuc
     logical(defBool)                                 :: isFissileMat
-    integer(shortInt),dimension(:),allocatable       :: nucIdxs
+    integer(shortInt),dimension(:),allocatable       :: nucIdxs, DBRCidxs
+    character(nameLen),dimension(:),allocatable      :: DBRC_nucs
     integer(shortInt), parameter :: IN_SET = 1, NOT_PRESENT = 0
     character(100), parameter :: Here = 'init (aceNeutronDatabase_class.f90)'
 
@@ -496,6 +554,28 @@ contains
     ! Load library
     call aceLib_load(aceLibPath)
 
+
+    ! Check if DBRC is listed in the input file
+    if (dict % isPresent('DBRC')) then
+
+      ! Set flag to true if DBRC nucs are in input file
+      self % hasDBRC = .true.
+
+      ! Call through list of DBRC nucs
+      call dict % get(DBRCidxs, 'DBRC')
+      allocate(DBRC_nucs(size(DBRCidxs)))
+      ! Add all DBRC nucs to nucSet
+      do i = 1, size(DBRCidxs)
+        DBRC_nucs(i) = numToChar(DBRCidxs(i))
+        DBRC_nucs(i) = trim(DBRC_nucs(i))//'.00'
+        call nucSet % add(DBRC_nucs(i), IN_SET)
+      end do
+      ! initiialise map of DBRC nucs and indexes
+      !call self % init_DBRC(DBRC_nucs, nucSet, nucIdxs, self % intMapDBRCnucs)
+
+    end if
+
+
     ! Build nuclide definitions
     allocate(self % nuclides(nucSet % length()))
     i = nucSet % begin()
@@ -552,10 +632,64 @@ contains
        call self % init_urr()
     end if
 
+    if (self % hasDBRC) then
+      call self % init_DBRC(DBRC_nucs, nucSet, self % intMapDBRCnucs)
+    end if
+
     !! Clean up
     call aceLib_kill()
 
   end subroutine init
+
+
+
+  !!
+  !!  Checks through all nuclides, creates map with nuclides present and corresponding 0K nuclide
+  !!
+  !!  NOTE: compares the first 5 letters of the ZAID.TT. It would be wrong with isotopes
+  !!        with Z > 99
+  !!
+  subroutine init_DBRC(self, DBRC_nucs, nucSet, map)
+    class(aceNeutronDatabase), intent(inout)    :: self
+    !class(aceNeutronNuclide), pointer           :: nuc
+    character(nameLen), dimension(:), intent(in):: DBRC_nucs
+    type(charMap), intent(in)                   :: nucSet
+    type(intMap), intent(out)                   :: map
+    integer(shortInt)                           :: i, j, k, idx
+    character(nameLen)                          :: nuc0K, nucDBRC
+    character(5)                                :: nuc0Ktemp, nucDBRCtemp
+
+    idx = 1
+
+    !start loop through all nuclides
+    do i = 1, size(DBRC_nucs)
+      nuc0K = DBRC_nucs(i)
+      nuc0Ktemp = nuc0K(1:5)
+
+      k = nucSet % begin()
+      do while (k /= nucSet % end())
+        if (nucSet % atKey(k) == nuc0K) then
+          idx = nucSet % atVal(k)
+          exit
+        end if
+        k = nucSet % next(k)
+      end do
+
+      j = nucSet % begin()
+      do while (j /= nucSet % end())
+        nucDBRC = nucSet % atKey(j)
+        nucDBRCtemp = nucDBRC(1:5)
+        if (nucDBRCtemp == nuc0Ktemp) then
+          call map % add(nucSet % atVal(j), idx)
+          print*, nucSet % atVal(j), idx
+          self % nuclides(nucSet % atVal(j)) % isNucDBRC = .true.
+        end if
+        j = nucSet % next(j)
+      end do
+    end do
+
+
+  end subroutine init_DBRC
 
   !!
   !!  Create list of nuclides with same ZAID, but possibly different temperatures

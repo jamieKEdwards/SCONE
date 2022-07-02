@@ -113,6 +113,8 @@ module aceNeutronNuclide_class
     logical(defBool)            :: hasProbTab = .false.
     integer(shortInt)           :: IFF = 0
 
+    !DBRC nuclide flag
+    logical(defBool)            :: isNucDBRC = .false.
 
   contains
     ! Superclass Interface
@@ -123,11 +125,13 @@ module aceNeutronNuclide_class
     ! Local interface
     procedure :: search
     procedure :: totalXS
+    procedure :: scatterXS
     procedure :: microXSs
     procedure :: getUrrXSs
     procedure :: init
     procedure :: init_urr
     procedure :: display
+    procedure :: maxXSs
 
   end type aceNeutronNuclide
 
@@ -335,6 +339,36 @@ contains
 
   end function totalXS
 
+
+  !!
+  !! Return value of the scattering XS given interpolation factor and index
+  !!
+  !! Does not perform any check for valid input!
+  !!
+  !! Args:
+  !!   idx [in] -> index of the bottom bin in nuclide Energy-Grid
+  !!   f [in]   -> interpolation factor in [0;1]
+  !!
+  !! Result:
+  !!   xs = sigma(idx+1) * f + (1-f) * sigma(idx)
+  !!
+  !! Errors:
+  !!   Invalid idx beyond array bounds -> undefined behaviour
+  !!   Invalid f (outside [0;1]) -> incorrect value of XS
+  !!
+  elemental function scatterXS(self, idx, f) result(xs)
+    class(aceNeutronNuclide), intent(in) :: self
+    integer(shortInt), intent(in)        :: idx
+    real(defReal), intent(in)            :: f
+    real(defReal)                        :: xs
+
+    xs = self % mainData(ESCATTER_XS, idx+1) * f + (ONE-f) * self % mainData(ESCATTER_XS, idx)
+
+  end function scatterXS
+
+
+
+
   !!
   !! Return interpolated neutronMicroXSs package for the given interpolation factor and index
   !!
@@ -357,7 +391,7 @@ contains
 
     associate (data => self % mainData(:,idx:idx+1))
 
-      xss % total            = data(TOTAL_XS, 2)  * f + (ONE-f) * data(TOTAL_XS, 1)
+      xss % total            = data(TOTAL_XS, 2)     * f + (ONE-f) * data(TOTAL_XS, 1)
       xss % elasticScatter   = data(ESCATTER_XS, 2)  * f + (ONE-f) * data(ESCATTER_XS, 1)
       xss % inelasticScatter = data(IESCATTER_XS, 2) * f + (ONE-f) * data(IESCATTER_XS, 1)
       xss % capture          = data(CAPTURE_XS, 2)   * f + (ONE-f) * data(CAPTURE_XS, 1)
@@ -372,6 +406,86 @@ contains
     end associate
 
   end subroutine microXSs
+
+
+
+  !! Function to calculate the maximum scattering cross section within an energy range given by an upper and lower energy bound.
+  !!
+  !!
+  !!Args:
+  !!   upperE [in]    -> Upper bound of energy range
+  !!   upperE [in]    -> Upper bound of energy range
+  !!   maxXS [out]    -> Maximum scattering cross section within energy range
+  !!
+  function maxXSs(self, lowerE, upperE) result (maxXS)
+    class(aceNeutronNuclide), intent(in)  :: self
+    real(defReal), intent(in)             :: lowerE
+    real(defReal), intent(in)             :: upperE
+    real(defReal)                         :: maxXS
+    type(neutronMicroXSs)                 :: xss
+    integer(shortInt)                     :: loweridx, idx, i
+    real(defReal)                         :: lowerXS, f, e, xs
+
+    ! print *, lowerE, upperE
+    ! Search for idx, f, and xs for the lower energy limit
+    call self % search(idx, f, lowerE)
+    loweridx = idx
+
+    call self % microXSs(xss, idx, f)
+    lowerXS = xss % elasticScatter
+
+    ! initially set interpolated lower bound as maximum xs
+    maxXS = lowerXS
+
+    ! Start loop at next index after lower energy bound
+    i = idx + 1
+    !print *, "Start loop"
+
+    maxXSLoop: do
+
+    !  find XS and energy at index
+      xs = self % mainData(2, i)
+      e = self % eGrid(i)
+      !print *, 'xss ',xs, maxXS
+      ! when e below upper bound accept or reject new maxXS
+      !print*, 'Energies ', e, upperE
+      if (e <= upperE) then
+        if (maxXS <= xs) then
+          maxXS = xs
+        end if
+
+      ! otherwise check if xs at next index is larger than exisitng max
+      else
+        if (xs > maxXS) then
+
+          ! do Interpolation and return xs
+          f = (upperE - self % eGrid(i-1)) / (self % eGrid(i) - self % eGrid(i-1))
+          xs = self % mainData(2, i) * f + (ONE-f) * self % mainData(2, i-1)
+
+          ! Check if new interpolated xs is larger than exisitng maximum, if yes then reassign
+          if (xs > maxXS) then
+            maxXS = xs
+          end if
+
+        ! if xs at the next index after energy range is not greater than existing max then exit loop
+        else
+
+          exit maxXSLoop
+
+        end if
+
+      end if
+      ! increase counter
+      i = i + 1
+
+    end do maxXSLoop
+    !print *, "End of Loop"
+
+  end function maxXSs
+
+
+
+
 
   !!
   !! Return neutronMicroXSs read from probability tables.
