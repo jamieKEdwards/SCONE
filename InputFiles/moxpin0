@@ -1,0 +1,233 @@
+type eigenPhysicsPackage;
+
+pop      100000;
+active   400;
+inactive 50;
+XSdata ce;
+dataType ce;
+
+// Specify output format default asciiMATLAB
+//outputFormat asciiJSON;
+
+collisionOperator { neutronCE {type neutronCEstd;}
+//collisionOperator { neutronCE {type neutronCEstd; DBRCeMin 0.0; DBRCeMax 2.0e-3;}
+                    neutronMG {type neutronMGstd;} }
+
+transportOperator { type transportOperatorST;
+                    cache 1;
+                   // type transportOperatorDT;
+                   // type transportOperatorHT;
+                   }
+
+inactiveTally {}
+
+activeTally {
+  norm totalPow;
+  normVal 100.0;
+  totalPow  { type collisionClerk; response (fission); fission { type macroResponse; MT -6;}}
+  ResMap {type collisionClerk;
+         map {type multiMap;
+              maps (ene mat);
+              ene { type energyMap; grid log; min 1.0E-11; max 20.0; N 300;}
+              mat { type materialMap; materials (water mox87 mox70 mox43);}
+              }
+         response (flux);
+         flux { type fluxResponse;}
+         }
+}
+
+geometry {
+  type geometryStd;
+  boundary ( 2 2 2 2 0 0);
+  graph {type shrunk;}
+
+  surfaces {
+    squareBound { id 1; type zSquareCylinder; origin (0.0 0.0 0.0); halfwidth (0.63 0.63 0.0);}
+  }
+
+  cells {
+   // in  {id 1; surfaces ( -1); filltype uni; universe 401;}
+   // out {id 2; surfaces (1); filltype outside; }
+  }
+
+  universes {
+    root { id 1; type rootUniverse; border 1; fill u<11>; }
+
+    // Pin universes
+    fuelpin {
+        id 11; type pinUniverse;
+        radii (0.475  0.5405   0.0  );
+        fills (fuel     clad      water);
+      }
+
+
+  }
+
+}
+
+
+viz {
+  myVTK {
+    type vtk;
+    corner (-10.71 -10.71 -0.5);
+    width (21.42 21.42 1.0);
+    vox (700 700 1);
+  }
+  bmp {
+    type bmp;
+    output img;
+    what material;
+    centre (0.0 0.0 0.0);
+    //width (25.0 25.0);
+    axis z;
+    res (500 500);
+  }
+}
+
+
+//DBRC  {
+//        emax (1.0E-4);
+//        nuclides(92238.00);
+//      }
+
+
+nuclearData {
+  handles {
+    ce {type aceNeutronDatabase; aceLibrary /home/jamie/data/myACE/JEF311.aceXS;}
+    //ce {type aceNeutronDatabase; DBRC (92238); aceLibrary /home/jamie/data/myACE/JEF311.aceXS;}
+  }
+  materials {
+    numberOfGroups 69;
+
+
+//% --- Water with 550 ppm boron:
+    water {
+      temp 600;
+      composition {
+        1001.06    4.7240E-02;
+        8016.06    2.3620E-02;
+        5010.06    4.3210E-06;
+        5011.06    1.7390E-05;
+                  }
+           }
+// zircaloy
+     clad {
+       temp 300;
+       composition {
+          40000.06    3.9550E-02;
+          26000.06    1.3830E-04;
+          24000.06    7.0720E-05;
+           8016.06    2.8740E-04;
+                   }
+          }
+
+// % --- High Pu-content (5.6%) MOX fuel:
+    mox56 {
+      temp 300;
+       composition {
+         92234.03    4.2175E-07;
+         92235.03    4.9766E-05;
+         92236.03    8.4350E-07;
+         92238.03    2.1037E-02;
+         94238.03    1.0815E-05;
+         94239.03    8.3501E-04;
+         94240.03    2.5798E-04;
+         94241.03    9.4430E-05;
+         94242.03    3.6112E-05;
+         95241.03    1.7374E-05;
+          8016.03    4.4678E-02;}
+      }
+// % --- Medium Pu-content (4.4%) MOX fuel:
+     mox44 {
+       temp 300;
+       composition {
+          92234.03    4.2718E-07;
+          92235.03    4.8271E-05;
+          92236.03    8.5435E-07;
+          92238.03    2.1309E-02;
+          94238.03    8.1476E-06;
+          94239.03    6.5555E-04;
+          94240.03    2.0151E-04;
+          94241.03    7.4065E-05;
+          94242.03    2.7751E-05;
+          95241.03    1.4626E-05;
+           8016.03    4.4681E-02;}
+       }
+// % --- Low Pu-content (2.9%) MOX fuel:
+     mox29 {
+       temp 300;
+       composition {
+          92234.03    4.3391E-07;
+          92235.03    4.9682E-05;
+          92236.03    8.6782E-07;
+          92238.03    2.1644E-02;
+          94238.03    5.4861E-06;
+          94239.03    4.3144E-04;
+          94240.03    1.3387E-04;
+          94241.03    4.8185E-05;
+          94242.03    1.8859E-05;
+          95241.03    9.1090E-06;
+           8016.03    4.4685E-02;}
+       }
+// 3.5% UO2 Fuel at 25MWd burn up
+     burnedfuel {
+       temp 300;
+       composition {
+         92235.03    3.0000E-04;
+         92236.03    8.0000E-05;
+         92238.03    2.0000E-02;
+         93237.03    7.1000E-06;
+         94238.03    1.7000E-06;
+         94239.03    1.2000E-04;
+         94240.03    3.8000E-05;
+         94241.03    2.1000E-05;
+         94242.03    5.3000E-06;
+         95241.03    4.2000E-07;
+         54131.03    1.4000E-05;
+         54135.03    8.0000E-09;
+         63153.03    2.8000E-06;
+         62149.03    9.0000E-08;
+         45103.03    1.8000E-05;
+         60143.03    2.5000E-05;
+         55133.03    3.5000E-05;
+         64155.03    8.4000E-10;
+         43099.03    3.2000E-05;
+         42095.03    3.2000E-05;
+         61147.03    6.4000E-06;
+         62150.03    7.5000E-06;
+         62151.03    4.1000E-07;
+         62152.03    3.2000E-06;
+          8016.03    4.5100E-02;
+                   }
+          }
+
+      fuel {
+        temp 1200;
+        composition {
+          92235.12    3.0000E-04;
+          92238.12    2.0000E-02;
+           8016.12    4.5100E-02;
+                }
+           }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   }
+}

@@ -12,6 +12,7 @@ module scatteringKernels_func
 
   public  :: asymptoticScatter
   public  :: targetVelocity_constXS
+  public  :: targetVelocity_relE
   public  :: targetVelocity_DBRCXS
   public  :: asymptoticInelasticScatter
 
@@ -156,6 +157,67 @@ contains
     V_t = V_t * (X * sqrt(kT/A))
 
   end function targetVelocity_constXS
+
+
+  !!
+  !! Function that returns a sample of target frame neutron energy using constant XS approximation
+  !!
+  !!
+  function targetVelocity_relE(E, A, kT, rand) result (rel_E)
+    real(defReal), intent(in)               :: E
+    real(defReal), intent(in)               :: A
+    real(defReal), intent(in)               :: kT
+    class(RNG), intent(inout)               :: rand
+    real(defReal)                           :: rel_E
+    real(defReal)                           :: alpha, mu, P_acc
+    real(defReal)                           :: X, Y, rel_V
+    real(defReal)                           :: r1, r2, r3, r4
+
+    ! Calculate neutron Y = beta *V_n
+    ! beta = sqrt(A*Mn/2kT). Note velocity scaling by sqrt(Mn/2).
+    Y = sqrt(A * E / kT)
+
+    ! Calculate treshhold factor alpha
+    ! In MCNP, alpha is p1
+    alpha = 2.0 / (Y * sqrt(PI) + 2.0)
+
+    rejectionLoop: do
+      !print*, "Rejected"
+      ! Obtain random numbers
+      r1 = rand % get()
+      r2 = rand % get()
+      r3 = rand % get()
+      r4 = rand % get()
+
+      ! Sample X = beta * V_t
+      if ( r1 > alpha ) then
+        X = sample_x2expx2(rand)
+
+      else
+        X = sample_x3expx2(rand)
+
+      end if
+
+      ! Sample polar angle of target velocity wrt. neutron direction
+      mu = 2.0 * r2 - 1.0;
+
+      ! Calculate relative velocity between neutron and target
+      rel_v = sqrt(Y * Y + X * X - 2.0 * X * Y * mu)
+
+      ! Calculate Acceptance Propability
+      P_acc = rel_v / (Y + X)
+
+      ! Accept or reject mu
+      if (P_acc > r3) exit
+
+    end do rejectionLoop
+
+      !print*, rel_v
+      ! Relative energy = relative velocity **2 due to sqrt(Mn/2) scaling factor
+      rel_E = (rel_v**2 * kT / A)
+
+
+  end function targetVelocity_relE
 
 
 

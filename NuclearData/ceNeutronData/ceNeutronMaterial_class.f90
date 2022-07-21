@@ -1,20 +1,28 @@
 module ceNeutronMaterial_class
 
   use numPrecision
-  use genericProcedures, only : fatalError
-  use RNG_class,         only : RNG
-  use particle_class,    only : particle
+  use universalVariables
+  use genericProcedures,            only : fatalError
+  use RNG_class,                    only : RNG
+  use particle_class,               only : particle
 
   ! Nuclear Data Handles
-  use materialHandle_inter,    only : materialHandle
-  use neutronMaterial_inter,   only : neutronMaterial
-  use neutronXsPackages_class, only : neutronMacroXSs
+  use materialHandle_inter,         only : materialHandle
+  use neutronMaterial_inter,        only : neutronMaterial
+  use neutronXsPackages_class,      only : neutronMacroXSs
 
   ! CE Neutron Interfaces
-  use ceNeutronDatabase_inter, only : ceNeutronDatabase
+  use ceNeutronDatabase_inter,       only : ceNeutronDatabase
+  use ceNeutronNuclide_inter,        only : ceNeutronNuclide, ceNeutronNuclide_CptrCast
+
+
+  use materialMenu_mod,             only : materialItem, mm_getMatPtr => getMatPtr
 
   ! Cache
-  use ceNeutronCache_mod,      only : materialCache, nuclideCache
+  use ceNeutronCache_mod,           only : materialCache, nuclideCache
+
+  ! Need target velocity function from scattering kernel for TMS
+  use scatteringKernels_func,       only : targetVelocity_relE
 
   implicit none
   private
@@ -48,7 +56,7 @@ module ceNeutronMaterial_class
   !!
   type, public, extends(neutronMaterial) :: ceNeutronMaterial
     integer(shortInt)                            :: matIdx = 0
-    class(ceNeutronDatabase), pointer            :: data => null()
+    class(ceNeutronDatabase), pointer, public    :: data => null()
     real(defReal), dimension(:), allocatable     :: dens
     integer(shortInt), dimension(:), allocatable :: nuclides
     logical(defBool)                             :: fissile =.false.
@@ -233,28 +241,77 @@ contains
   !!   fatalError if E is out-of-bounds of the present data
   !!
   function sampleNuclide(self, E, rand) result(nucIdx)
-    class(ceNeutronMaterial), intent(in) :: self
+    class(ceNeutronMaterial), intent(inout) :: self
     real(defReal), intent(in)            :: E
     class(RNG), intent(inout)            :: rand
+    type(materialItem), pointer          :: matItem
+    class(ceNeutronNuclide), pointer     :: nuc
     integer(shortInt)                    :: nucIdx
-    real(defReal)                        :: xs
+    real(defReal)                        :: xs, P_acc
     integer(shortInt)                    :: i
+    real(defReal)                        :: deltakT, matkT, kT, rel_E
+    real(defReal)                        :: A, nucMajXS, matMajXS, dens, nucTotalRelXS
+    real(defReal), parameter             :: kB = 1.380649e-23
     character(100), parameter :: Here = 'sampleNuclide (ceNeutronMaterial_class.f90)'
 
-    ! Get total material XS
-    if(E /= materialCache(self % matIdx) % E_tot) then
-      call self % data % updateTotalMatXS(E, self % matIdx, rand)
+    matItem => mm_getMatPtr(self % matIdx)
+
+    !cast pointer to aceNeutronDatabase
+    !self % aceData => aceNeutronDatabase_CptrCast(self % data)
+    !if(.not.associated(self % aceData)) call fatalError(Here, 'Failed to retive ACE Neutron Database')
+
+
+    if (matItem % hasTMS) then
+
+      if(E /= materialCache(self % matIdx) % E_tot) then
+        call self % data % updateMajorantXS(E, rand)
+      end if
+      ! retrive mat majorant XSs from cache
+      matMajXS = materialCache(self % matIdx) % xss % total * rand % get()
+      matkT = (kB * matItem % T) / joulesPerMeV
+
+      do i=1,size(self % nuclides)
+        nucIdx = self % nuclides(i)
+        dens = self % dens(i)
+        ! retrive nuc majorant XSs from cache
+        nucMajXS = nuclideCache(nucIdx) % xss % total * dens
+
+        matMajXS = matMajXS - nucMajXS
+        if (matMajXS < 0) then
+          nuc => ceNeutronNuclide_CptrCast(self % data % getNuclide(nucIdx))
+          if(.not.associated(nuc)) call fatalError(Here, 'Failed to retive CE Neutron Nuclide')
+
+          kT = nuc % getkT()
+          A = nuc % getMass()
+          deltakT = matkT - kT
+
+          rel_E = targetVelocity_relE(E, A, deltakT, rand)
+
+          ! get relative energy cross section
+          call self % data % updateMicroXSs(rel_E, nucIdx, rand)
+
+          ! sample nuclide using ratio of nuc majorants to mat majorant
+          P_acc = nuclideCache(nucIdx) % xss % total / nucMajXS
+          ! accept or reject the sampled nuclide
+          if (rand % get() < P_acc) return
+        end if
+      end do
+    else
+      ! Get total material XS
+      if(E /= materialCache(self % matIdx) % E_tot) then
+        call self % data % updateTotalMatXS(E, self % matIdx, rand)
+      end if
+
+      xs = materialCache(self % matIdx) % xss % total * rand % get()
+
+      ! Loop over all nuclides
+      do i=1,size(self % nuclides)
+        nucIdx = self % nuclides(i)
+        if(E /= nuclideCache(nucIdx) % E_tot) call self % data % updateTotalNucXS(E, nucIdx, rand)
+        xs = xs - nuclideCache(nucIdx) % xss % total * self % dens(i)
+        if(xs < ZERO) return
+      end do
     end if
-
-    xs = materialCache(self % matIdx) % xss % total * rand % get()
-
-    ! Loop over all nuclides
-    do i=1,size(self % nuclides)
-      nucIdx = self % nuclides(i)
-      if(E /= nuclideCache(nucIdx) % E_tot) call self % data % updateTotalNucXS(E, nucIdx, rand)
-      xs = xs - nuclideCache(nucIdx) % xss % total * self % dens(i)
-      if(xs < ZERO) return
-    end do
 
     ! Print error message as the inversion failed
     call fatalError(Here,'Nuclide sampling loop failed to terminate')

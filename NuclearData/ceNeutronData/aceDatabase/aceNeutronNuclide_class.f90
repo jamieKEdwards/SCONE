@@ -132,6 +132,7 @@ module aceNeutronNuclide_class
     procedure :: init_urr
     procedure :: display
     procedure :: maxXSs
+    procedure :: maxXSt
 
   end type aceNeutronNuclide
 
@@ -444,7 +445,7 @@ contains
     maxXSLoop: do
 
     !  find XS and energy at index
-      xs = self % mainData(2, i)
+      xs = self % mainData(ESCATTER_XS, i)
       e = self % eGrid(i)
       !print *, 'xss ',xs, maxXS
       ! when e below upper bound accept or reject new maxXS
@@ -460,7 +461,7 @@ contains
 
           ! do Interpolation and return xs
           f = (upperE - self % eGrid(i-1)) / (self % eGrid(i) - self % eGrid(i-1))
-          xs = self % mainData(2, i) * f + (ONE-f) * self % mainData(2, i-1)
+          xs = self % mainData(ESCATTER_XS, i) * f + (ONE-f) * self % mainData(ESCATTER_XS, i-1)
 
           ! Check if new interpolated xs is larger than exisitng maximum, if yes then reassign
           if (xs > maxXS) then
@@ -483,7 +484,79 @@ contains
 
   end function maxXSs
 
+  !! Function to calculate the maximum total cross section within an energy range given by an upper and lower energy bound.
+  !!
+  !!
+  !!Args:
+  !!   upperE [in]    -> Upper bound of energy range
+  !!   upperE [in]    -> Upper bound of energy range
+  !!   maxXS [out]    -> Maximum total cross section within energy range
+  !!
+  function maxXSt(self, lowerE, upperE) result (maxXS)
+    class(aceNeutronNuclide), intent(in)  :: self
+    real(defReal), intent(in)             :: lowerE
+    real(defReal), intent(in)             :: upperE
+    real(defReal)                         :: maxXS
+    type(neutronMicroXSs)                 :: xss
+    integer(shortInt)                     :: loweridx, idx, i
+    real(defReal)                         :: lowerXS, f, e, xs
 
+    ! print *, lowerE, upperE
+    ! Search for idx, f, and xs for the lower energy limit
+    call self % search(idx, f, lowerE)
+    loweridx = idx
+
+    call self % microXSs(xss, idx, f)
+    lowerXS = xss % total
+
+    ! initially set interpolated lower bound as maximum xs
+    maxXS = lowerXS
+
+    ! Start loop at next index after lower energy bound
+    i = idx + 1
+    !print *, "Start loop"
+
+    maxXSLoop: do
+
+    !  find XS and energy at index
+      xs = self % mainData(TOTAL_XS, i)
+      e = self % eGrid(i)
+      !print *, 'xss ',xs, maxXS
+      ! when e below upper bound accept or reject new maxXS
+      !print*, 'Energies ', e, upperE
+      if (e <= upperE) then
+        if (maxXS <= xs) then
+          maxXS = xs
+        end if
+
+      ! otherwise check if xs at next index is larger than exisitng max
+      else
+        if (xs > maxXS) then
+
+          ! do Interpolation and return xs
+          f = (upperE - self % eGrid(i-1)) / (self % eGrid(i) - self % eGrid(i-1))
+          xs = self % mainData(TOTAL_XS, i) * f + (ONE-f) * self % mainData(TOTAL_XS, i-1)
+
+          ! Check if new interpolated xs is larger than exisitng maximum, if yes then reassign
+          if (xs > maxXS) then
+            maxXS = xs
+          end if
+
+        ! if xs at the next index after energy range is not greater than existing max then exit loop
+        else
+
+          exit maxXSLoop
+
+        end if
+
+      end if
+      ! increase counter
+      i = i + 1
+
+    end do maxXSLoop
+    !print *, "End of Loop"
+
+  end function maxXSt
 
 
 

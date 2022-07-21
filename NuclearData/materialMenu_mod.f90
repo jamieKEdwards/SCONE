@@ -89,6 +89,8 @@ module materialMenu_mod
     real(defReal),dimension(:),allocatable     :: dens
     type(nuclideInfo),dimension(:),allocatable :: nuclides
     type(dictionary)                           :: extraInfo
+    logical(defBool)                           :: hasTMS = .FALSE.
+
   contains
     procedure :: init    => init_materialItem
     procedure :: kill    => kill_materialItem
@@ -261,7 +263,15 @@ contains
 
     ! Load easy components c
     self % name = name
-    call dict % get(self % T,'temp')
+
+    ! use temp key word as the input to turn on TMS
+    if (dict % isPresent('temp')) then
+      !add flag to the material to show that TMS will be used on it
+      self % hasTMS = .true.
+      call dict % get(self % T, 'temp')
+    else
+      self % hasTMS = .false.
+    end if
 
     ! Get composition dictionary and load composition
     compDict => dict % getDictPtr('composition')

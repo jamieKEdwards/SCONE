@@ -35,6 +35,9 @@ module aceNeutronDatabase_class
                                            cache_zaidCache => zaidCache, &
                                            cache_init => init
 
+  ! Need target velocity function from scattering kernel for TMS
+  use scatteringKernels_func,       only : targetVelocity_relE
+
   implicit none
   private
 
@@ -94,11 +97,16 @@ module aceNeutronDatabase_class
     procedure :: energyBounds
     procedure :: updateTotalMatXS
     procedure :: updateMajorantXS
-    procedure :: updateTempMicroMajorantXS
-    procedure :: updateTempMacroMajorantXS
     procedure :: updateMacroXSs
     procedure :: updateTotalNucXS
     procedure :: updateMicroXSs
+
+    !aceNeutronDatabase Procedres
+    procedure :: getRelEMicroXS
+    procedure :: updateTempMicroMajorantXS
+    procedure :: updateTempMacroMajorantXS
+
+
 
   end type aceNeutronDatabase
 
@@ -181,6 +189,40 @@ contains
   end function getNuclide
 
   !!
+  !! returns total micro cross section given
+  !!
+  !! See ceNeutronDatabase for more details
+  !!
+  function getRelEMicroXS(self, E, nucIdx, matkT, rand) result(relEMicroXS)
+    class(aceNeutronDatabase), intent(in) :: self
+    real(defReal), intent(in)             :: E
+    real(defReal), intent(in)             :: matkT
+    integer(shortInt), intent(in)         :: nucIdx
+    class(RNG), intent(inout)             :: rand
+    real(defReal)                         :: relEMicroXS, A, kT, deltakT, rel_E
+
+    associate (nucCache => cache_nuclideCache(nucIdx), &
+               nuc      => self % nuclides(nucIdx)     )
+
+      ! find nuclide rel_e total macro XS for rejection
+      A = self % nuclides(nucIdx) % getMass()
+      kT = self % nuclides(nucIdx) % getkT()
+      deltakT = matkT - kT
+
+      ! sample relative energy
+      rel_E = targetVelocity_relE(E, A, deltakT, rand)
+
+      ! search for cross section at sampled energy
+      call nuc % search(nucCache % idx, nucCache % f, E)
+      relEMicroXS = nuc % totalXS(nucCache % idx, nucCache % f)
+
+    end associate
+
+  end function getRelEMicroXS
+
+
+
+  !!
   !! Return a pointer to a reaction
   !!
   !! See nuclearData_inter for  more details
@@ -254,32 +296,61 @@ contains
     real(defReal), intent(in)             :: E
     integer(shortInt), intent(in)         :: matIdx
     class(RNG), intent(inout)             :: rand
+    type(materialItem), pointer           :: matItem
     integer(shortInt)                     :: i, nucIdx
-    real(defReal)                         :: dens
+    real(defReal)                         :: dens, A, nuckT, rel_E, matkT, deltakT
+    real(defReal)                         :: kB = 1.380649e-23
 
-    associate (mat => cache_materialCache(matIdx))
+    associate ( mat => cache_materialCache(matIdx))
+
+      matItem => mm_getMatPtr(matIdx)
+
       ! Set new energy
       mat % E_tot  = E
 
       ! Clean current total XS
       mat % xss % total = ZERO
 
-      ! Construct total macro XS
-      do i = 1, size(self % materials(matIdx) % nuclides)
-        dens   = self % materials(matIdx) % dens(i)
-        nucIdx = self % materials(matIdx) % nuclides(i)
+      ! import material temperature and energy in MeV
+      matkT = (kB * matItem % T) / joulesPerMeV
 
-        ! Update if needed
-        if(cache_nuclideCache(nucIdx) % E_tot /= E) then
-          call self % updateTotalNucXS(E, nucIdx, rand)
-        end if
+      if (matItem % hasTMS) then
+        do i = 1, size(self % materials(matIdx) % nuclides)
+          ! bring though nuclide data
+          dens   = self % materials(matIdx) % dens(i)
+          nucIdx = self % materials(matIdx) % nuclides(i)
+          A = self % nuclides(nucIdx) % getMass()
+          nuckT = self % nuclides(nucIdx) % getkT()
 
-        ! Add microscopic XSs
-        mat % xss % total = mat % xss % total + dens * cache_nuclideCache(nucIdx) % xss % total
-      end do
+          ! calculate difference in kT between nuclear data and the material
+          deltakT = matkT - nuckT
 
+          !sample target velocity to find relative energy
+          rel_E = targetVelocity_relE(E, A, deltakT, rand)
+
+          call self % updateTotalNucXS(rel_E, nucIdx, rand)
+
+          mat % xss % total = mat % xss % total + dens * cache_nuclideCache(nucIdx) % xss % total
+        end do
+
+      else
+
+        ! Construct total macro XS
+        do i = 1, size(self % materials(matIdx) % nuclides)
+          dens   = self % materials(matIdx) % dens(i)
+          nucIdx = self % materials(matIdx) % nuclides(i)
+
+          ! Update if needed
+          if(cache_nuclideCache(nucIdx) % E_tot /= E) then
+            call self % updateTotalNucXS(E, nucIdx, rand)
+          end if
+
+          ! Add microscopic XSs
+          mat % xss % total = mat % xss % total + dens * cache_nuclideCache(nucIdx) % xss % total
+        end do
+
+      end if
     end associate
-
   end subroutine updateTotalMatXS
 
   !!
@@ -292,21 +363,33 @@ contains
     class(aceNeutronDatabase), intent(in) :: self
     real(defReal), intent(in)             :: E
     class(RNG), intent(inout)             :: rand
+    type(materialItem), pointer           :: matItem
     integer(shortInt)                     :: i, matIdx
 
-    associate (maj => cache_majorantCache(1) )
-      maj % E  = E
+    associate (maj => cache_majorantCache(1))
+      maj % E = E
       maj % xs = ZERO
 
+      !associate(matMenu => mm_getMatPtr(transMat))
+
       do i = 1, size(self % activeMat)
+
         matIdx = self % activeMat(i)
 
-        ! Update if needed
+        matItem => mm_getMatPtr(matIdx)
+
         if( cache_materialCache(matIdx) % E_tot /= E) then
-          call self % updateTotalMatXS(E, matIdx, rand)
+
+          if (matItem % hasTMS) then
+            call self % updateTempMacroMajorantXS(E, matIdx)
+          else
+            call self % updateTotalMatXS(E, matIdx, rand)
+          end if
+
         end if
 
-        maj % xs = max(maj % xs, cache_materialCache(matIdx) % xss % total)
+      maj % xs = max(maj % xs, cache_materialCache(matIdx) % xss % total)
+
       end do
     end associate
 
@@ -431,36 +514,40 @@ contains
   !!   E [in]         -> Energy of neutron incident to target for which temp majorant needs to be found
   !!   TmajXS [out]   -> Temperature majorant
   !!
-  function updateTempMicroMajorantXS(self, E, kT, A, nucIdx, sysMinE) result(TmajXs)
+  function updateTempMicroMajorantXS(self, E, kT, A, nucIdx) result(TmajXs)
     class(aceNeutronDatabase), intent(in) :: self
     !class(aceNeutronNuclide), pointer     :: nuc
     real(defReal), intent(in)             :: E
     real(defReal), intent(in)             :: kT
     real(defReal), intent(in)             :: A
-    real(defReal), intent(in)             :: sysMinE
     integer(shortInt), intent(in)         :: nucIdx
     real(defReal)                         :: TmajXS
-    real(defReal)                         :: E_upper, E_lower
+    real(defReal)                         :: E_upper, E_lower, E_min, E_max
     real(defReal)                         :: alpha
-    logical(defBool)                      :: eCheck
 
 
-      ! Factor for varying the truncation factor for the maxwell boltzman distribuition
-      alpha = 4 * sqrt( kT / A )
+    ! Factor for varying the truncation factor for the maxwell boltzman distribuition
+    alpha = 4 * sqrt( kT / A )
 
-      ! Upper and lower energy limits within the highest cross section should be found
-      E_upper = (sqrt(E) + alpha)**2
-      E_lower = (sqrt(E) - alpha)**2
+    ! Upper and lower energy limits within the highest cross section should be found
+    E_upper = (sqrt(E) + alpha)**2
+    E_lower = (sqrt(E) - alpha)**2
 
-      eCheck = (E <= E_upper) .and. (E_lower <= E)
 
-      ! avoid MB dist extending into energies outside system range
-      if (E_lower < sysMinE) then
-        E_lower = sysMinE
-      end if
+    ! Call through system minimum and maximum energies
+    call self % energyBounds(E_min, E_max)
 
-      ! use function in nuclide to find largest scattering xs in range of E_upper and E_lower
-      TmajXS = self % nuclides(nucIdx) % maxXSs(E_lower, E_upper)
+    ! avoid MB dist extending into energies outside system range
+    if (E_lower < E_min) then
+      E_lower = E_min
+    end if
+
+    if (E_max < E_lower) then
+      E_upper = E_max
+    end if
+
+    ! use function in nuclide to find largest scattering xs in range of E_upper and E_lower
+    TmajXS = self % nuclides(nucIdx) % maxXSs(E_lower, E_upper)
 
 
 
@@ -477,40 +564,73 @@ contains
   !!   E [in]         -> Energy of neutron incident to target for which temp majorant needs to be found
   !!   TmajXS [out]   -> Temperature majorant
   !!
-  function updateTempMacroMajorantXS(self, E, kT, A, matIdx, sysMinE) result(TmajXs)
+  subroutine updateTempMacroMajorantXS(self, E, matIdx)
     class(aceNeutronDatabase), intent(in) :: self
-    !class(aceNeutronNuclide), pointer     :: nuc
     real(defReal), intent(in)             :: E
-    real(defReal), intent(in)             :: kT
-    real(defReal), intent(in)             :: A
-    real(defReal), intent(in)             :: sysMinE
-    integer(shortInt), intent(in)         :: nucIdx
-    real(defReal)                         :: TmajXS
-    real(defReal)                         :: E_upper, E_lower
-    real(defReal)                         :: alpha
-    logical(defBool)                      :: eCheck
+    integer(shortInt), intent(in)         :: matIdx
+    type(materialItem), pointer           :: matItem
+    integer(shortInt)                     :: nucIdx, i
+    real(defReal)                         :: E_upper, E_lower, E_min, E_max
+    real(defReal)                         :: alpha, dens
+    real(defReal)                         :: deltakT, matkT, kT
+    real(defReal)                         :: A
+    real(defReal)                         :: kB = 1.380649e-23
+    character(100), parameter :: Here = 'updateTempMacroMajorantXS (aceNeutronDatabase_class.f90)'
 
+    matItem => mm_getMatPtr(matIdx)
+    associate(mat     => cache_materialCache(matIdx))
+
+    ! Clean exiting XSs
+    cache_nuclideCache(nucIdx) % xss % total = ZERO
+    mat % xss % total = ZERO
+
+
+    !material temperature import
+    matkT = (kB * matItem % T) / joulesPerMeV
+    ! loop through all nuclides in material and find sum of majorants
+    do i = 1, size(self % materials(matIdx) % nuclides)
+
+      nucIdx = self % materials(matIdx) % nuclides(i)
+      dens = self % materials(matIdx) % dens(i)
+      kT = self % nuclides(nucIdx) % getkT()
+      A = self % nuclides(nucIdx) % getMass()
+      deltakT = matkT - kT
+
+      !call fatal error if material temp is lower then base nuclide temps
+      if (deltakT < ZERO) then
+        call fatalError(Here,"Material temperature must be greater than nuclear data temperature")
+      end if
 
       ! Factor for varying the truncation factor for the maxwell boltzman distribuition
-      alpha = 4 * sqrt( kT / A )
+      alpha = 4 * sqrt(deltakT / A)
 
       ! Upper and lower energy limits within the highest cross section should be found
       E_upper = (sqrt(E) + alpha)**2
       E_lower = (sqrt(E) - alpha)**2
 
-      eCheck = (E <= E_upper) .and. (E_lower <= E)
+      ! Call through system minimum and maximum energies
+      call self % energyBounds(E_min, E_max)
 
       ! avoid MB dist extending into energies outside system range
-      if (E_lower < sysMinE) then
-        E_lower = sysMinE
+      if (E_lower < E_min) then
+        E_lower = E_min
       end if
 
-      ! use function in nuclide to find largest scattering xs in range of E_upper and E_lower
-      TmajXS = self % nuclides(nucIdx) % maxXSs(E_lower, E_upper)
+      if (E_max < E_lower) then
+        E_upper = E_max
+      end if
 
 
+      cache_nuclideCache(nucIdx) % xss % total = self % nuclides(nucIdx) % maxXSt(E_lower, E_upper) * dens
+      ! use function in nuclide to find largest total xs in range of E_upper and E_lower and add to subtotal
+      mat % xss % total = mat % xss % total + cache_nuclideCache(nucIdx) % xss % total * dens
 
-  end function updateTempMacroMajorantXS
+    end do
+
+
+  end associate
+
+end subroutine updateTempMacroMajorantXS
 
 
 
@@ -783,6 +903,9 @@ contains
   !! See nuclearDatabase documentation for details
   !!
   subroutine activate(self, activeMat)
+
+
+
     class(aceNeutronDatabase), intent(inout)    :: self
     integer(shortInt), dimension(:), intent(in) :: activeMat
 

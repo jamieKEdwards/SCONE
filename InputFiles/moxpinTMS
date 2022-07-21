@@ -1,0 +1,163 @@
+type eigenPhysicsPackage;
+
+pop      5000;
+active   400;
+inactive 50;
+XSdata ce;
+dataType ce;
+
+// Specify output format default asciiMATLAB
+//outputFormat asciiJSON;
+
+collisionOperator { neutronCE {type neutronCEstd;}
+//collisionOperator { neutronCE {type neutronCEstd; DBRCeMin 1.0e-8; DBRCeMax 2.0e-4;}
+                    neutronMG {type neutronMGstd;} }
+
+transportOperator { //type transportOperatorST;
+                   type transportOperatorDT;
+                   // type transportOperatorHT;
+                   }
+
+inactiveTally {}
+
+activeTally {
+  norm totalPow;
+  normVal 100.0;
+  totalPow  { type collisionClerk; response (fission); fission { type macroResponse; MT -6;}}
+ fluxSpectrum {type collisionClerk;
+         map {
+              type energyMap; grid log; min 1.0E-11; max 20.0; N 300;
+              }
+         response (flux);
+         flux { type fluxResponse;}
+         }
+ U8absorption {type collisionClerk;
+         map {
+              type energyMap; grid log; min 1.0E-11; max 20.0; N 300;
+              }
+         response (u8);
+         u8 { type microResponse; MT 102; material u8; }
+                 }
+}
+
+geometry {
+  type geometryStd;
+  boundary ( 2 2 2 2 0 0);
+  graph {type shrunk;}
+
+  surfaces {
+    squareBound { id 1; type zSquareCylinder; origin (0.0 0.0 0.0); halfwidth (0.63 0.63 0.0);}
+  }
+
+  cells {
+   // in  {id 1; surfaces ( -1); filltype uni; universe 401;}
+   // out {id 2; surfaces (1); filltype outside; }
+  }
+
+  universes {
+    root { id 1; type rootUniverse; border 1; fill u<11>; }
+
+    // Pin universes
+    fuelpin {
+        id 11; type pinUniverse;
+        radii (0.475  0.5405   0.0  );
+        fills (fuel     clad      water);
+      }
+
+
+  }
+
+}
+
+
+viz {
+  myVTK {
+    type vtk;
+    corner (-10.71 -10.71 -0.5);
+    width (21.42 21.42 1.0);
+    vox (700 700 1);
+  }
+  bmp {
+    type bmp;
+    output img;
+    what material;
+    centre (0.0 0.0 0.0);
+    //width (25.0 25.0);
+    axis z;
+    res (500 500);
+  }
+}
+
+
+//DBRC  {
+//        emax (1.0E-4);
+//        nuclides(92238.00);
+//      }
+
+
+nuclearData {
+  handles {
+    ce {type aceNeutronDatabase; aceLibrary /home/jamie/data/myACE/JEF311.aceXS;}
+    //ce {type aceNeutronDatabase; DBRC (92238); aceLibrary /home/jamie/data/myACE/JEF311.aceXS;}
+  }
+  materials {
+    numberOfGroups 69;
+
+
+//% --- Water with 550 ppm boron:
+     water {
+       //temp 650;
+       composition {
+          1001.06    4.7240E-02;
+          8016.06    2.3620E-02;
+          5010.06    4.3210E-06;
+          5011.06    1.7390E-05;
+                  }
+           }
+// zircaloy
+     clad {
+       //temp 650;
+       composition {
+          40000.06    3.9550E-02;
+          26000.06    1.3830E-04;
+          24000.06    7.0720E-05;
+           8016.06    2.8740E-04;
+                   }
+          }
+
+          fuel {
+            temp 1200;
+            composition {
+              92235.06    3.0000E-04;
+              92238.06    2.0000E-02;
+               8016.06    4.5100E-02;
+                    }
+               }
+           u8 {
+             //temp 1200;
+             composition {
+               92238.06    1.0;
+                     }
+                }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   }
+}
