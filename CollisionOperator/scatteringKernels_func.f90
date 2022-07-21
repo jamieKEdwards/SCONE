@@ -14,10 +14,14 @@ module scatteringKernels_func
   public  :: targetVelocity_constXS
   public  :: targetVelocity_relE
   public  :: targetVelocity_DBRCXS
+  public  :: SERPtargetVelocity_DBRCXS
   public  :: asymptoticInelasticScatter
 
   private :: sample_x2expx2
   private :: sample_x3expx2
+
+  private :: sample_x2expx2serp
+  private :: sample_x3expx2serp
 
   !type(aceNeutronNuclide), pointer, public :: aceNuc => null()
 
@@ -328,6 +332,115 @@ contains
   end function targetVelocity_DBRCXS
 
 
+  !!
+  !! Function that returns a sample of target velocity with DBRC
+  !! V_t is a vector. The velocity is scaled by a factor sqrt(Mn/2) where Mn is mass of a neutron
+  !! so that V_t*V_t=E_t with E_t being kinetic energy of a NEUTRON traveling with TARGET VELOCITY
+  !! (note that it is not a kinetic energy of the target).
+  !!
+  !!
+  function SERPtargetVelocity_DBRCXS(aceNuc, E, dir, A, kT, rand, TmajXS) result (V_t)
+    class(aceNeutronNuclide), intent(in)    :: aceNuc
+    real(defReal), intent(in)               :: E
+    real(defReal), dimension(3), intent(in) :: dir
+    real(defReal), intent(in)               :: A
+    real(defReal), intent(in)               :: kT
+    real(defReal), intent(in)               :: TmajXS
+    !integer(shortInt), intent(in)           :: nucIdx
+    class(RNG), intent(inout)               :: rand
+    !class(aceNeutronNuclide), pointer       :: ptr
+    integer(shortInt)                       :: idx
+    real(defReal),dimension(3)              :: V_t
+    real(defReal)                           :: alpha, mu, phi, P_acc, DBRC_acc
+    real(defReal)                           :: X, Y
+    real(defReal)                           :: r1, r2, r3, r4, r5
+    real(defreal)                           :: rel_v2, rel_E, xs_rel_v, f, rnd1
+
+    !print *, "DBRC Target velocity function being used"
+    ! Pointer to aceNeutronNuclide
+    !associate(nuc => aceNeutronNuclide(nucIdx))
+
+    ! Calculate neutron Y = beta *V_n
+    ! beta = sqrt(A*Mn/2kT). Note velocity scaling by sqrt(Mn/2).
+    Y = sqrt(A * E / kT)
+
+    ! Calculate treshhold factor alpha
+    ! In MCNP, alpha is p1
+    alpha = 2.0 / (Y * sqrt(PI) + 2.0)
+
+
+    rejectionLoop: do
+      !print*, "Rejected"
+      ! Obtain random numbers
+      do
+        r1 = rand % get()
+        r2 = rand % get()
+        r3 = rand % get()
+
+        ! serpent method for sampling
+        ! Sample X = beta * V_t
+        if ( r1 > alpha ) then
+          X = sample_x2expx2serp(rand)
+
+        else
+          X = sample_x3expx2serp(rand)
+
+        end if
+
+
+        ! Sample polar angle of target velocity wrt. neutron direction
+        mu = 2.0 * r2 - 1.0;
+
+        ! Calculate relative velocity between neutron and target
+        rel_v2 = Y * Y + X * X - 2.0 * X * Y * mu
+
+        ! Calculate Acceptance Propability
+        rnd1 = r3 * (Y + X)
+
+        ! Accept or reject mu
+        if ( rnd1 * rnd1 < rel_v2 ) exit
+      end do
+      !print*, rel_v
+      ! Relative energy = relative velocity **2 due to sqrt(Mn/2) scaling factor
+      rel_E = (rel_v2 * kT / A)
+
+
+      !print*, rel_E
+      ! Find scattering xs of target at relative velocity (rel_v), done through calling subroutines from neutronNuclide
+      call aceNuc % search(idx, f, rel_E)
+      !call aceNuc % scatterXS(xs, idx, f)
+      xs_rel_v = aceNuc % scatterXS(idx, f)
+      !print *, "rel micro scatter xs", xs_rel_v
+
+      ! Introduce DBRC acceptance condition
+      ! first term is ratio of cross sections, second term is the C' term from Becker 2009
+      DBRC_acc = (xs_rel_v / TmajXS) !* ((1 + (Y * sqrt(PI)) / 2) / (Y * sqrt(PI)))
+      !print *, "DBRC_acc", DBRC_acc
+
+      r4 = rand % get()
+
+      ! accept or reject with DBRC
+      if (DBRC_acc > r4) then
+        !print *, "ACCEPTED"
+        exit rejectionLoop
+      end if
+
+
+    end do rejectionLoop
+
+    !End associate
+    !print*, "Accepted"
+    ! Calculate azimithal angle for traget and obtain target direction
+    r5 = rand % get()
+    phi = 2.0 * PI * r5
+
+    V_t = rotateVector(dir, mu, phi)
+
+    ! Scale target direction by magnitude of velocity
+    V_t = V_t * (X * sqrt(kT / A))
+
+  end function SERPtargetVelocity_DBRCXS
+
 
 
 
@@ -374,6 +487,41 @@ contains
 
 
   !!
+  !! Helper function to sample x^2 * exp( - x^2) probability distribution
+  !! Uses random numbers from provided RNG
+  !! Uses method from Serpent
+  !!
+  function sample_x2expx2serp(rand) result(sample)
+    class(RNG), intent(inout) :: rand
+    real(defReal)             :: sample
+    real(defReal)             :: r1, r2, r3
+    real(defReal)             :: s
+
+    ! Obtain all random numbers
+    r3 = rand % get()
+
+    do
+      r1 = rand % get()
+      r2 = rand % get()
+
+      s = r1 * r1 + r2 * r2
+      if ( s < 1) then
+        exit
+      end if
+    end do
+
+    sample = -r1 * log(s) / s -log(r3)
+
+    sample = sqrt(sample)
+
+  end function sample_x2expx2serp
+
+
+
+
+
+
+  !!
   !! Helper function to sample x^3 * exp( - x^2) probability distribution
   !! Uses random numbers from provided RNG
   !! Changes variables to y = x^2 which transforms PDF to Gamma(2,1) distribution
@@ -395,6 +543,29 @@ contains
     sample = sqrt(sample)
 
   end function sample_x3expx2
+
+  !!
+  !! Helper function to sample x^3 * exp( - x^2) probability distribution
+  !! Uses random numbers from provided RNG
+  !! Uses method from Serpent
+  !!
+  function sample_x3expx2serp(rand) result(sample)
+    class(RNG), intent(inout) :: rand
+    real(defReal)             :: sample
+    real(defReal)             :: r1, r2
+
+    ! Obtain random numbers
+    r1 = rand % get()
+    r2 = rand % get()
+
+    ! Sample Gamma(2,1) by summing two samples of Gamma(1,1) [exponential distribution]
+    sample = -log(r1 * r2)
+
+    ! Change variables back to x
+    sample = sqrt(sample)
+
+  end function sample_x3expx2serp
+
 
 
 end module scatteringKernels_func

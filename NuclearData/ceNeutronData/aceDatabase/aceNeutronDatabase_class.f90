@@ -97,6 +97,10 @@ module aceNeutronDatabase_class
     procedure :: energyBounds
     procedure :: updateTotalMatXS
     procedure :: updateMajorantXS
+<<<<<<< HEAD
+=======
+    procedure :: updateTempMicroMajorantXS
+>>>>>>> 6865d7002f45cfe6d12cfdec3d417902957d8261
     procedure :: updateMacroXSs
     procedure :: updateTotalNucXS
     procedure :: updateMicroXSs
@@ -514,7 +518,11 @@ contains
   !!   E [in]         -> Energy of neutron incident to target for which temp majorant needs to be found
   !!   TmajXS [out]   -> Temperature majorant
   !!
+<<<<<<< HEAD
   function updateTempMicroMajorantXS(self, E, kT, A, nucIdx) result(TmajXs)
+=======
+  function updateTempMicroMajorantXS(self, E, kT, A, nucIdx, sysMinE) result(TmajXs)
+>>>>>>> 6865d7002f45cfe6d12cfdec3d417902957d8261
     class(aceNeutronDatabase), intent(in) :: self
     !class(aceNeutronNuclide), pointer     :: nuc
     real(defReal), intent(in)             :: E
@@ -627,10 +635,14 @@ contains
 
     end do
 
+<<<<<<< HEAD
 
   end associate
 
 end subroutine updateTempMacroMajorantXS
+=======
+  end function updateTempMicroMajorantXS
+>>>>>>> 6865d7002f45cfe6d12cfdec3d417902957d8261
 
 
 

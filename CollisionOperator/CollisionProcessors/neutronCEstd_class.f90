@@ -36,7 +36,7 @@ module neutronCEstd_class
   use neutronXsPackages_class,       only : neutronMicroXSs
 
   ! Scattering procedures
-  use scatteringKernels_func, only : asymptoticScatter, targetVelocity_constXS, targetVelocity_DBRCXS, &
+  use scatteringKernels_func, only : asymptoticScatter, targetVelocity_constXS, targetVelocity_DBRCXS, SERPtargetVelocity_DBRCXS, &
                                      asymptoticInelasticScatter
   implicit none
   private
