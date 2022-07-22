@@ -262,6 +262,7 @@ contains
 
 
     if (matItem % hasTMS) then
+      print*, "TMS"
 
       if(E /= materialCache(self % matIdx) % E_tot) then
         call self % data % updateMajorantXS(E, rand)
@@ -269,7 +270,7 @@ contains
       ! retrive mat majorant XSs from cache
       matMajXS = materialCache(self % matIdx) % xss % total * rand % get()
       matkT = (kB * matItem % T) / joulesPerMeV
-
+      print*, matMajXS
       do i=1,size(self % nuclides)
         nucIdx = self % nuclides(i)
         dens = self % dens(i)
@@ -277,6 +278,7 @@ contains
         nucMajXS = nuclideCache(nucIdx) % xss % total * dens
 
         matMajXS = matMajXS - nucMajXS
+        print*, matMajXS
         if (matMajXS < 0) then
           nuc => ceNeutronNuclide_CptrCast(self % data % getNuclide(nucIdx))
           if(.not.associated(nuc)) call fatalError(Here, 'Failed to retive CE Neutron Nuclide')
@@ -297,18 +299,20 @@ contains
         end if
       end do
     else
+      print*, "Non TMS"
       ! Get total material XS
       if(E /= materialCache(self % matIdx) % E_tot) then
         call self % data % updateTotalMatXS(E, self % matIdx, rand)
       end if
 
       xs = materialCache(self % matIdx) % xss % total * rand % get()
-
+      print*, xs
       ! Loop over all nuclides
       do i=1,size(self % nuclides)
         nucIdx = self % nuclides(i)
         if(E /= nuclideCache(nucIdx) % E_tot) call self % data % updateTotalNucXS(E, nucIdx, rand)
-        xs = xs - nuclideCache(nucIdx) % xss % total * self % dens(i)
+        xs = xs - nuclideCache(nucIdx) % xss % total * self % dens(i) 
+        print*, xs
         if(xs < ZERO) return
       end do
     end if
