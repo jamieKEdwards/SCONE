@@ -22,7 +22,7 @@ module ceNeutronMaterial_class
   use ceNeutronCache_mod,           only : materialCache, nuclideCache
 
   ! Need target velocity function from scattering kernel for TMS
-  use scatteringKernels_func,       only : targetVelocity_relE
+  use scatteringKernels_func,       only : targetVelocity_relE, dopplerCorrectionFactor
 
   implicit none
   private
@@ -60,6 +60,7 @@ module ceNeutronMaterial_class
     real(defReal), dimension(:), allocatable     :: dens
     integer(shortInt), dimension(:), allocatable :: nuclides
     logical(defBool)                             :: fissile =.false.
+    logical(defBool)                             :: matHasTMS =.false.
 
   contains
     ! Superclass procedures
@@ -240,45 +241,44 @@ contains
   !!   fatalError if sampling fails for some reason (E.G. random number > 1)
   !!   fatalError if E is out-of-bounds of the present data
   !!
-  function sampleNuclide(self, E, rand) result(nucIdx)
+  subroutine sampleNuclide(self, E, rand, nucIdx, rel_E)
     class(ceNeutronMaterial), intent(inout) :: self
     real(defReal), intent(in)            :: E
     class(RNG), intent(inout)            :: rand
     type(materialItem), pointer          :: matItem
     class(ceNeutronNuclide), pointer     :: nuc
-    integer(shortInt)                    :: nucIdx
+    integer(shortInt), intent(out)       :: nucIdx
+    real(defReal), intent(out)           :: rel_E
     real(defReal)                        :: xs, P_acc
     integer(shortInt)                    :: i
-    real(defReal)                        :: deltakT, matkT, kT, rel_E
-    real(defReal)                        :: A, nucMajXS, matMajXS, dens, nucTotalRelXS
-    real(defReal), parameter             :: kB = 1.380649e-23
+    real(defReal)                        :: deltakT, matkT, kT, E_min, E_max
+    real(defReal)                        :: A, nucMajXS, matMajXS, dens
     character(100), parameter :: Here = 'sampleNuclide (ceNeutronMaterial_class.f90)'
 
     matItem => mm_getMatPtr(self % matIdx)
 
-    !cast pointer to aceNeutronDatabase
-    !self % aceData => aceNeutronDatabase_CptrCast(self % data)
-    !if(.not.associated(self % aceData)) call fatalError(Here, 'Failed to retive ACE Neutron Database')
-
-
     if (matItem % hasTMS) then
-      print*, "TMS"
+      ! print*, "TMS"
+      self % matHasTMS = .true.
 
-      if(E /= materialCache(self % matIdx) % E_tot) then
+      if(E /= materialCache(self % matIdx) % E_maj) then
         call self % data % updateMajorantXS(E, rand)
       end if
+      matkT = (kBoltzmann * matItem % T) / joulesPerMeV
+      !print*, materialCache(self % matIdx) % TmajXS
       ! retrive mat majorant XSs from cache
-      matMajXS = materialCache(self % matIdx) % xss % total * rand % get()
-      matkT = (kB * matItem % T) / joulesPerMeV
-      print*, matMajXS
+
+
+      matMajXS = materialCache(self % matIdx) % TmajXS * rand % get()
+
       do i=1,size(self % nuclides)
         nucIdx = self % nuclides(i)
         dens = self % dens(i)
+
         ! retrive nuc majorant XSs from cache
-        nucMajXS = nuclideCache(nucIdx) % xss % total * dens
+        nucMajXS = nuclideCache(nucIdx) % TmajXS
 
         matMajXS = matMajXS - nucMajXS
-        print*, matMajXS
         if (matMajXS < 0) then
           nuc => ceNeutronNuclide_CptrCast(self % data % getNuclide(nucIdx))
           if(.not.associated(nuc)) call fatalError(Here, 'Failed to retive CE Neutron Nuclide')
@@ -288,31 +288,58 @@ contains
           deltakT = matkT - kT
 
           rel_E = targetVelocity_relE(E, A, deltakT, rand)
+          !print*, 'E incoming = ', E, '      E rel = ', rel_E
+          call self % data % energyBounds(E_min, E_max)
+          ! Call through system minimum and maximum energies
+
+          ! avoid sampled relative energy from MB dist extending into energies outside system range
+          if (rel_E < E_min) then
+            rel_E = E_min
+          end if
+
+          if (E_max < rel_E) then
+            rel_E = E_max
+          end if
 
           ! get relative energy cross section
           call self % data % updateMicroXSs(rel_E, nucIdx, rand)
 
-          ! sample nuclide using ratio of nuc majorants to mat majorant
-          P_acc = nuclideCache(nucIdx) % xss % total / nucMajXS
+          ! sample nuclide using ratio of rel E xs to nuc majorant
+          P_acc = nuclideCache(nucIdx) % xss % total * dens * dopplerCorrectionFactor(E, A, deltakT) / nucMajXS
+          !print*, "nucIdx" , nucIdx
+          !print*, "e and rel e", E, rel_E
+          !print*, nuclideCache(nucIdx) % xss % total
+          !print*, nucMajXS / dens
+          !print*, P_acc
+          !print*, "SAMPLING"
+
+
           ! accept or reject the sampled nuclide
-          if (rand % get() < P_acc) return
+          if (rand % get() < P_acc) then
+            return
+          else
+            nucIdx = -2
+            return
+          end if
         end if
       end do
     else
-      print*, "Non TMS"
+      !print*, "Non TMS"
       ! Get total material XS
       if(E /= materialCache(self % matIdx) % E_tot) then
         call self % data % updateTotalMatXS(E, self % matIdx, rand)
       end if
 
       xs = materialCache(self % matIdx) % xss % total * rand % get()
-      print*, xs
+      !print*, xs
       ! Loop over all nuclides
       do i=1,size(self % nuclides)
         nucIdx = self % nuclides(i)
-        if(E /= nuclideCache(nucIdx) % E_tot) call self % data % updateTotalNucXS(E, nucIdx, rand)
-        xs = xs - nuclideCache(nucIdx) % xss % total * self % dens(i) 
-        print*, xs
+        if(E /= nuclideCache(nucIdx) % E_tot) then
+          call self % data % updateTotalNucXS(E, nucIdx, rand)
+        end if
+        xs = xs - nuclideCache(nucIdx) % xss % total * self % dens(i)
+        !print*, xs
         if(xs < ZERO) return
       end do
     end if
@@ -320,7 +347,7 @@ contains
     ! Print error message as the inversion failed
     call fatalError(Here,'Nuclide sampling loop failed to terminate')
 
-  end function sampleNuclide
+  end subroutine sampleNuclide
 
   !!
   !! Sample fission nuclide given that a fission neutron was produced

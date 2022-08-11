@@ -504,31 +504,31 @@ contains
     ! print *, lowerE, upperE
     ! Search for idx, f, and xs for the lower energy limit
     call self % search(idx, f, lowerE)
+
     loweridx = idx
 
-    call self % microXSs(xss, idx, f)
-    lowerXS = xss % total
+    lowerXS = totalXS(self, idx, f)
 
     ! initially set interpolated lower bound as maximum xs
     maxXS = lowerXS
 
     ! Start loop at next index after lower energy bound
     i = idx + 1
-    !print *, "Start loop"
+    !print *, "Start of maxxs loop"
 
     maxXSLoop: do
 
     !  find XS and energy at index
       xs = self % mainData(TOTAL_XS, i)
       e = self % eGrid(i)
-      !print *, 'xss ',xs, maxXS
+
       ! when e below upper bound accept or reject new maxXS
       !print*, 'Energies ', e, upperE
       if (e <= upperE) then
         if (maxXS <= xs) then
           maxXS = xs
         end if
-
+        !print *, 'xss ',xs, maxXS
       ! otherwise check if xs at next index is larger than exisitng max
       else
         if (xs > maxXS) then
@@ -541,10 +541,10 @@ contains
           if (xs > maxXS) then
             maxXS = xs
           end if
-
+          exit maxXSLoop
         ! if xs at the next index after energy range is not greater than existing max then exit loop
         else
-
+          !print*, "end of max xs loop"
           exit maxXSLoop
 
         end if

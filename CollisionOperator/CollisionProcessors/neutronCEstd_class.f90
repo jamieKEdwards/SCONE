@@ -75,7 +75,9 @@ module neutronCEstd_class
     class(ceNeutronNuclide),  pointer, public :: nuc    => null()
     class(aceNeutronNuclide), pointer, public :: aceNuc => null()
     class(aceNeutronDatabase), pointer, public:: aceData=> null()
-
+    integer(shortInt), public :: count = 0
+    integer(shortInt), public :: rejCount = 0
+    real(defReal), public :: frac = 0
 
 
 
@@ -154,7 +156,7 @@ contains
     class(particleDungeon),intent(inout) :: thisCycle
     class(particleDungeon),intent(inout) :: nextCycle
     type(neutronMicroXSs)                :: microXSs
-    real(defReal)                        :: r
+    real(defReal)                        :: r, rel_E
     character(100),parameter :: Here = 'sampleCollision (neutronCEstd_class.f90)'
 
     ! Verify that particle is CE neutron
@@ -171,15 +173,36 @@ contains
     if(.not.associated(self % mat)) call fatalError(Here, 'Material is not ceNeutronMaterial')
 
     ! Select collision nuclide
-    collDat % nucIdx = self % mat % sampleNuclide(p % E, p % pRNG)
+    call self % mat % sampleNuclide(p % E, p % pRNG, collDat % nucIdx, rel_E)
+
+    self % count = self % count + 1
+    self % frac = ((self % rejCount) / (self % count))
+
+    if ((self % mat % matHasTMS) .and. (collDat % nucIdx == -2)) then
+      collDat % MT = noInteraction
+      self % rejCount = self % rejCount + 1
+
+      !print*, "rejection stats"
+      !print*, self % rejCount
+      !print*, self % count
+      !print*, self % frac
+      return
+    end if
+
 
     self % nuc => ceNeutronNuclide_CptrCast(self % xsData % getNuclide(collDat % nucIdx))
-    if(.not.associated(self % mat)) call fatalError(Here, 'Failed to retive CE Neutron Nuclide')
+    if(.not.associated(self % mat)) call fatalError(Here, 'Failed to retrieve CE Neutron Nuclide')
 
     ! Select Main reaction channel
-    call self % nuc % getMicroXSs(microXss, p % E, p % pRNG)
-    r = p % pRNG % get()
-    collDat % MT = microXss % invert(r)
+    if (self % mat % matHasTMS) then
+      call self % nuc % getMicroXSs(microXss, rel_E, p % pRNG)
+      r = p % pRNG % get()
+      collDat % MT = microXss % invert(r)
+    else
+      call self % nuc % getMicroXSs(microXss, p % E, p % pRNG)
+      r = p % pRNG % get()
+      collDat % MT = microXss % invert(r)
+    end if
 
   end subroutine sampleCollision
 

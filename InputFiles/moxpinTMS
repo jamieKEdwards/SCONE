@@ -1,10 +1,11 @@
 type eigenPhysicsPackage;
 
-pop      5000;
+pop      15000;
 active   400;
 inactive 50;
 XSdata ce;
 dataType ce;
+outputFile TMSout;
 
 // Specify output format default asciiMATLAB
 //outputFormat asciiJSON;
@@ -26,18 +27,18 @@ activeTally {
   totalPow  { type collisionClerk; response (fission); fission { type macroResponse; MT -6;}}
  fluxSpectrum {type collisionClerk;
          map {
-              type energyMap; grid log; min 1.0E-11; max 20.0; N 300;
+              type energyMap; grid log; min 1.0E-11; max 20.0; N 1000;
               }
          response (flux);
          flux { type fluxResponse;}
          }
- U8absorption {type collisionClerk;
-         map {
-              type energyMap; grid log; min 1.0E-11; max 20.0; N 300;
-              }
-         response (u8);
-         u8 { type microResponse; MT 102; material u8; }
-                 }
+ //U8absorption {type collisionClerk;
+  //       map {
+    //          type energyMap; grid log; min 1.0E-11; max 20.0; N 1000;
+      //        }
+      //   response (u8);
+      //   u8 { type microResponse; MT 102; material u8; }
+        //         }
 }
 
 geometry {
@@ -106,7 +107,7 @@ nuclearData {
 
 //% --- Water with 550 ppm boron:
      water {
-       //temp 650;
+       temp 601;
        composition {
           1001.06    4.7240E-02;
           8016.06    2.3620E-02;
@@ -116,29 +117,29 @@ nuclearData {
            }
 // zircaloy
      clad {
-       //temp 650;
+       temp 601;
        composition {
           40000.06    3.9550E-02;
           26000.06    1.3830E-04;
           24000.06    7.0720E-05;
-           8016.06    2.8740E-04;
+           //8016.06    2.8740E-04;
                    }
           }
 
           fuel {
-            temp 1200;
+            temp 1201;
             composition {
-              92235.06    3.0000E-04;
+              92235.12    3.0000E-04;
               92238.06    2.0000E-02;
-               8016.06    4.5100E-02;
+               8016.12    4.5100E-02;
                     }
                }
-           u8 {
+           //u8 {
              //temp 1200;
-             composition {
-               92238.06    1.0;
-                     }
-                }
+            // composition {
+            //   92238.06    1.0;
+            //         }
+            //    }
 
 
 

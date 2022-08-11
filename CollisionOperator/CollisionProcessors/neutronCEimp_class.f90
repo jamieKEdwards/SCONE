@@ -181,7 +181,7 @@ contains
     class(particleDungeon),intent(inout) :: thisCycle
     class(particleDungeon),intent(inout) :: nextCycle
     type(neutronMicroXSs)                :: microXSs
-    real(defReal)                        :: r
+    real(defReal)                        :: r, rel_E
     character(100),parameter :: Here = 'sampleCollision (neutronCEimp_class.f90)'
 
     ! Verify that particle is CE neutron
@@ -198,15 +198,21 @@ contains
     if(.not.associated(self % mat)) call fatalError(Here, 'Material is not ceNeutronMaterial')
 
     ! Select collision nuclide
-    collDat % nucIdx = self % mat % sampleNuclide(p % E, p % pRNG)
+    call self % mat % sampleNuclide(p % E, p % pRNG, collDat % nucIdx, rel_E)
 
     self % nuc => ceNeutronNuclide_CptrCast(self % xsData % getNuclide(collDat % nucIdx))
     if(.not.associated(self % mat)) call fatalError(Here, 'Failed to retive CE Neutron Nuclide')
 
     ! Select Main reaction channel
-    call self % nuc % getMicroXSs(microXss, p % E, p % pRNG)
-    r = p % pRNG % get()
-    collDat % MT = microXss % invert(r)
+    if (self % mat % matHasTMS) then
+      call self % nuc % getMicroXSs(microXss, rel_E, p % pRNG)
+      r = p % pRNG % get()
+      collDat % MT = microXss % invert(r)
+    else
+      call self % nuc % getMicroXSs(microXss, p % E, p % pRNG)
+      r = p % pRNG % get()
+      collDat % MT = microXss % invert(r)
+    end if
 
   end subroutine sampleCollision
 

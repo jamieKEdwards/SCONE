@@ -36,7 +36,7 @@ module aceNeutronDatabase_class
                                            cache_init => init
 
   ! Need target velocity function from scattering kernel for TMS
-  use scatteringKernels_func,       only : targetVelocity_relE
+  use scatteringKernels_func,       only : targetVelocity_relE, dopplerCorrectionFactor
 
   implicit none
   private
@@ -199,7 +199,9 @@ contains
     real(defReal), intent(in)             :: matkT
     integer(shortInt), intent(in)         :: nucIdx
     class(RNG), intent(inout)             :: rand
-    real(defReal)                         :: relEMicroXS, A, kT, deltakT, rel_E
+    real(defReal)                         :: E_min, E_max, rel_E
+    real(defReal)                         :: relEMicroXS, A, kT, deltakT
+    character(100), parameter :: Here = 'getRelEMicroXS (aceNeutronDatabase_class.f90)'
 
     associate (nucCache => cache_nuclideCache(nucIdx), &
                nuc      => self % nuclides(nucIdx)     )
@@ -209,8 +211,25 @@ contains
       kT = self % nuclides(nucIdx) % getkT()
       deltakT = matkT - kT
 
+      !call fatal error if material temp is lower then base nuclide temps
+      !if (deltakT < ZERO) then
+      !  call fatalError(Here,"Material temperature must be greater than the nuclear data temperature. Try a higher temp.")
+      !end if
+
       ! sample relative energy
       rel_E = targetVelocity_relE(E, A, deltakT, rand)
+
+      call self % energyBounds(E_min, E_max)
+      ! Call through system minimum and maximum energies
+
+      ! avoid sampled relative energy from MB dist extending into energies outside system range
+      if (rel_E < E_min) then
+        rel_E = E_min
+      end if
+
+      if (E_max < rel_E) then
+        rel_E = E_max
+      end if
 
       ! search for cross section at sampled energy
       call nuc % search(nucCache % idx, nucCache % f, E)
@@ -298,8 +317,9 @@ contains
     class(RNG), intent(inout)             :: rand
     type(materialItem), pointer           :: matItem
     integer(shortInt)                     :: i, nucIdx
-    real(defReal)                         :: dens, A, nuckT, rel_E, matkT, deltakT
-    real(defReal)                         :: kB = 1.380649e-23
+    real(defReal)                         :: dens, A, nuckT, matkT, deltakT
+    real(defReal)                         :: E_min, E_max, rel_E, corrFact
+    character(100), parameter :: Here = 'updateTotalMatXS (aceNeutronDatabase_class.f90)'
 
     associate ( mat => cache_materialCache(matIdx))
 
@@ -311,27 +331,13 @@ contains
       ! Clean current total XS
       mat % xss % total = ZERO
 
-      ! import material temperature and energy in MeV
-      matkT = (kB * matItem % T) / joulesPerMeV
+
 
       if (matItem % hasTMS) then
-        do i = 1, size(self % materials(matIdx) % nuclides)
-          ! bring though nuclide data
-          dens   = self % materials(matIdx) % dens(i)
-          nucIdx = self % materials(matIdx) % nuclides(i)
-          A = self % nuclides(nucIdx) % getMass()
-          nuckT = self % nuclides(nucIdx) % getkT()
-
-          ! calculate difference in kT between nuclear data and the material
-          deltakT = matkT - nuckT
-
-          !sample target velocity to find relative energy
-          rel_E = targetVelocity_relE(E, A, deltakT, rand)
-
-          call self % updateTotalNucXS(rel_E, nucIdx, rand)
-
-          mat % xss % total = mat % xss % total + dens * cache_nuclideCache(nucIdx) % xss % total
-        end do
+        if (mat % E_maj /= E) then
+          call updateTempMacroMajorantXS(self, E, matIdx)
+        end if
+        mat % xss % total = mat % TmajXS
 
       else
 
@@ -365,7 +371,7 @@ contains
     class(RNG), intent(inout)             :: rand
     type(materialItem), pointer           :: matItem
     integer(shortInt)                     :: i, matIdx
-
+    !print*, "updating global majorant"
     associate (maj => cache_majorantCache(1))
       maj % E = E
       maj % xs = ZERO
@@ -378,17 +384,17 @@ contains
 
         matItem => mm_getMatPtr(matIdx)
 
-        if( cache_materialCache(matIdx) % E_tot /= E) then
-
           if (matItem % hasTMS) then
-            call self % updateTempMacroMajorantXS(E, matIdx)
+            if( cache_materialCache(matIdx) % E_maj /= E) then
+              call self % updateTempMacroMajorantXS(E, matIdx)
+            end if
+            maj % xs = max(maj % xs, cache_materialCache(matIdx) % TmajXS)
           else
-            call self % updateTotalMatXS(E, matIdx, rand)
+            if( cache_materialCache(matIdx) % E_tot /= E) then
+              call self % updateTotalMatXS(E, matIdx, rand)
+            end if
+            maj % xs = max(maj % xs, cache_materialCache(matIdx) % xss % total)
           end if
-
-        end if
-
-      maj % xs = max(maj % xs, cache_materialCache(matIdx) % xss % total)
 
       end do
     end associate
@@ -408,7 +414,6 @@ contains
     class(RNG), intent(inout)             :: rand
     integer(shortInt)                     :: i, nucIdx
     real(defReal)                         :: dens
-
     associate (mat => cache_materialCache(matIdx))
       ! Set new energy
       mat % E_tot  = E
@@ -424,6 +429,7 @@ contains
 
         ! Update if needed
         if(cache_nuclideCache(nucIdx) % E_tail /= E) then
+
           call self % updateMicroXSs(E, nucIdx, rand)
         end if
 
@@ -546,7 +552,7 @@ contains
     if (E_max < E_lower) then
       E_upper = E_max
     end if
-
+    !print*, E_lower, E, E_upper
     ! use function in nuclide to find largest scattering xs in range of E_upper and E_lower
     TmajXS = self % nuclides(nucIdx) % maxXSs(E_lower, E_upper)
 
@@ -563,7 +569,6 @@ contains
   !!   A [in]         -> Nuclide mass number
   !!   kT [in]        -> Thermal energy of nuclide
   !!   E [in]         -> Energy of neutron incident to target for which temp majorant needs to be found
-  !!   TmajXS [out]   -> Temperature majorant
   !!
   subroutine updateTempMacroMajorantXS(self, E, matIdx)
     class(aceNeutronDatabase), intent(in) :: self
@@ -572,34 +577,39 @@ contains
     type(materialItem), pointer           :: matItem
     integer(shortInt)                     :: nucIdx, i
     real(defReal)                         :: E_upper, E_lower, E_min, E_max
-    real(defReal)                         :: alpha, dens
+    real(defReal)                         :: alpha, dens, corrFact
     real(defReal)                         :: deltakT, matkT, kT
     real(defReal)                         :: A
-    real(defReal)                         :: kB = 1.380649e-23
     character(100), parameter :: Here = 'updateTempMacroMajorantXS (aceNeutronDatabase_class.f90)'
+
 
     matItem => mm_getMatPtr(matIdx)
     associate(mat     => cache_materialCache(matIdx))
 
     ! Clean exiting XSs
-    cache_nuclideCache(nucIdx) % xss % total = ZERO
-    mat % xss % total = ZERO
+    mat % TmajXS = ZERO
 
+    ! add majorant energy to cache
+    mat % E_maj = E
 
     !material temperature import
-    matkT = (kB * matItem % T) / joulesPerMeV
+    matkT = (kBoltzmann * matItem % T) / joulesPerMeV
     ! loop through all nuclides in material and find sum of majorants
     do i = 1, size(self % materials(matIdx) % nuclides)
 
+      ! bring though nuclide data
       nucIdx = self % materials(matIdx) % nuclides(i)
       dens = self % materials(matIdx) % dens(i)
       kT = self % nuclides(nucIdx) % getkT()
       A = self % nuclides(nucIdx) % getMass()
       deltakT = matkT - kT
 
+      ! clean existing Xss
+      cache_nuclideCache(nucIdx) % TmajXS = ZERO
+
       !call fatal error if material temp is lower then base nuclide temps
-      if (deltakT < ZERO) then
-        call fatalError(Here,"Material temperature must be greater than nuclear data temperature")
+      if (deltakT < -1e-6) then
+        call fatalError(Here,"Material temperature must be greater than the nuclear data temperature. Try a higher temp.")
       end if
 
       ! Factor for varying the truncation factor for the maxwell boltzman distribuition
@@ -617,14 +627,19 @@ contains
         E_lower = E_min
       end if
 
-      if (E_max < E_lower) then
+      if (E_max < E_upper) then
         E_upper = E_max
       end if
 
+      ! G factor correction for low energies
+      corrFact = dopplerCorrectionFactor(E, A, deltakT)
 
-      cache_nuclideCache(nucIdx) % xss % total = self % nuclides(nucIdx) % maxXSt(E_lower, E_upper) * dens
+      !print*, "setting nucmaj for nucIdx", nucIdx
+      !print*, "Energy majorant width", E_lower, E_upper
+      cache_nuclideCache(nucIdx) % TmajXS = self % nuclides(nucIdx) % maxXSt(E_lower, E_upper) * dens * corrFact
+      !print*, "nuc maj result", self % nuclides(nucIdx) % maxXSt(E_lower, E_upper)
       ! use function in nuclide to find largest total xs in range of E_upper and E_lower and add to subtotal
-      mat % xss % total = mat % xss % total + cache_nuclideCache(nucIdx) % xss % total * dens
+      mat % TmajXS = mat % TmajXS + cache_nuclideCache(nucIdx) % TmajXS
 
     end do
 
@@ -848,7 +863,7 @@ end subroutine updateTempMacroMajorantXS
         nucDBRCtemp = nucDBRC(1:5)
         if (nucDBRCtemp == nuc0Ktemp) then
           call map % add(nucSet % atVal(j), idx)
-          print*, nucSet % atVal(j), idx
+          !print*, nucSet % atVal(j), idx
           self % nuclides(nucSet % atVal(j)) % isNucDBRC = .true.
         end if
         j = nucSet % next(j)

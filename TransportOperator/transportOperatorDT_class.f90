@@ -65,6 +65,10 @@ contains
       ! Check for void
       if( p % matIdx() == VOID_MAT) cycle DTLoop
 
+      !if material is TMS exit loop and sample nuclides
+      !if (mat % hasTMS) exit DTLoop
+
+
       ! Obtain the local cross-section
       sigmaT = self % xsData % getTransMatXS(p, p % matIdx())
 
@@ -75,8 +79,12 @@ contains
 
       ! Roll RNG to determine if the collision is real or virtual
       ! Exit the loop if the collision is real
-      if (p % pRNG % get() < sigmaT*majorant_inv) exit DTLoop
 
+      if (p % pRNG % get() < sigmaT * majorant_inv) then
+        !print*, "accepted collision"
+        !print*, p % matIdx()
+        exit DTLoop
+      end if
     end do DTLoop
 
     call tally % reportTrans(p)

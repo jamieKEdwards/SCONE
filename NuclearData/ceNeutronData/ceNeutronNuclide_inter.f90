@@ -196,7 +196,7 @@ contains
   !!   kT [in]        -> Temperature [MeV] of the data in the nuclide
   !!
   !! Error:
-  !!   fatalError if kT <= 0.0
+  !!   fatalError if kT < 0.0
   !!   fatalError if mass <= 0.0
   !!
   subroutine set(self, nucIdx, database, fissile, mass, kT)
@@ -218,7 +218,7 @@ contains
     end if
 
     if(present(kT)) then
-      if(kT <= ZERO) call fatalError(Here, "Temperature of nuclide cannot be -ve: "//numToChar(kT))
+      if(kT < ZERO) call fatalError(Here, "Temperature of nuclide cannot be -ve: "//numToChar(kT))
       self % kT = kT
     end if
 

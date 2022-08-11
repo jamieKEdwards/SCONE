@@ -16,6 +16,7 @@ module scatteringKernels_func
   public  :: targetVelocity_DBRCXS
   public  :: SERPtargetVelocity_DBRCXS
   public  :: asymptoticInelasticScatter
+  public  :: dopplerCorrectionFactor
 
   private :: sample_x2expx2
   private :: sample_x3expx2
@@ -544,6 +545,9 @@ contains
 
   end function sample_x3expx2
 
+
+
+
   !!
   !! Helper function to sample x^3 * exp( - x^2) probability distribution
   !! Uses random numbers from provided RNG
@@ -565,6 +569,37 @@ contains
     sample = sqrt(sample)
 
   end function sample_x3expx2serp
+
+
+
+
+  !!
+  !! Function to return the doppler broadening low energy correction factor
+  !! Common notation for this constant is g_E(E, A, kT) or g(v).
+  !! Energy Limits taken from Serpent 2.1.31
+  !!
+  function dopplerCorrectionFactor(E, A, kT) result(g)
+    real(defReal), intent(in) :: A
+    real(defReal), intent(in) :: kT
+    real(defReal), intent(in) :: E
+    real(defReal)             :: alpha, invAlph
+    real(defReal)             :: g
+
+    alpha = sqrt(A * E / kT)
+
+    invAlph = 1 / alpha
+
+    if (alpha > 250) then
+      g = ONE
+    else if (alpha > 2.568) then
+      g = 1 + 0.5 * invAlph * invAlph
+    else
+      ! 0.56419 is sqrt(PI)
+      g = (1 + 0.5 * invAlph * invAlph) * ERF(a) + EXP(-alpha * alpha) * invAlph * 0.56419
+    end if
+
+
+  end function dopplerCorrectionFactor
 
 
 

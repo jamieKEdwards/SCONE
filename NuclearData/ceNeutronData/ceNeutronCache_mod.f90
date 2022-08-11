@@ -31,15 +31,19 @@ module ceNeutronCache_mod
   !!   E_tot  -> Energy of the total XS in xss
   !!   E_tail -> Energy of all XSs in xss except total
   !!   E_uni  -> Energy idx and f refer to, when material-unionised grids are used
+  !!   E_maj  -> Energy of temperature majorant XS
   !!   f      -> Interpolation factor for the nuclide at energy E_tot
   !!   idx    -> Index on a nuclide grid for energy E_tot
   !!   xss    -> Cached Cross-Section values
+  !!   TmajXS -> Temperature majorant nuclide XS
   !!
   type, public :: cacheMatDat
     real(defReal)         :: E_tot  = ZERO
     real(defReal)         :: E_tail = ZERO
     real(defReal)         :: E_uni  = ZERO
+    real(defReal)         :: E_maj  = ZERO
     real(defReal)         :: f      = ZERO
+    real(defReal)         :: TmajXS = ZERO
     integer(shortInt)     :: idx    = 0
     type(neutronMacroXSs) :: xss
   end type cacheMatDat
@@ -51,15 +55,19 @@ module ceNeutronCache_mod
   !!   E_tot  -> Energy of the total XS in xss
   !!   E_tail -> Energy of all XSs in xss except total
   !!   E_mat  -> Energy idx and f refer to, when unionised double-indexing grids are used
+  !!   E_maj  -> Energy of temperature majorant XS
   !!   f      -> Interpolation factor for the nuclide at energy E_tot
   !!   idx    -> Index on a nuclide grid for energy E_tot
   !!   xss    -> Cached Cross-Sections values
+  !!   TmajXS -> Temperature majorant nuclide XS
   !!
   type, public :: cacheNucDat
     real(defReal)         :: E_tot  = ZERO
     real(defReal)         :: E_tail = ZERO
     real(defReal)         :: E_mat  = ZERO
+    real(defReal)         :: E_maj  = ZERO
     real(defReal)         :: f      = ZERO
+    real(defReal)         :: TmajXS = ZERO
     integer(shortInt)     :: idx    = 0
     type(neutronMicroXSs) :: xss
   end type cacheNucDat

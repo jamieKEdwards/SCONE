@@ -116,35 +116,40 @@ contains
     ! Load material index into data package
     collDat % matIdx = p % matIdx()
 
+
+    ! Choose collision nuclide and general type (Scatter, Capture or Fission)
+    call self % sampleCollision(p, collDat, thisCycle, nextCycle)
+    if (collDat % MT == noInteraction) return
+
     ! Report in-collision & save pre-collison state
     ! Note: the ordering must not be changed between feeding the particle to the tally
-    ! and updating the particle's preCollision state, otherwise this may cause certain 
+    ! and updating the particle's preCollision state, otherwise this may cause certain
     ! tallies (e.g., collisionProbability) to return dubious results
     call tally % reportInColl(p)
     call p % savePreCollision()
 
-    ! Choose collision nuclide and general type (Scatter, Capture or Fission)
-    call self % sampleCollision(p, collDat, thisCycle, nextCycle)
-
-    ! Perform implicit treatment
-    call self % implicit(p, collDat, thisCycle, nextCycle)
 
     ! Select physics to be processed based on MT number
     select case(collDat % MT)
       case(N_N_elastic, macroAllScatter)
+        call self % implicit(p, collDat, thisCycle, nextCycle)
         call self % elastic(p, collDat, thisCycle, nextCycle)
 
       case(N_N_inelastic, macroIEScatter)
+        call self % implicit(p, collDat, thisCycle, nextCycle)
         call self % inelastic(p, collDat, thisCycle, nextCycle)
 
       case(N_DISAP, macroCapture)
+        call self % implicit(p, collDat, thisCycle, nextCycle)
         call self % capture(p, collDat, thisCycle, nextCycle)
 
       case(N_FISSION, macroFission)
+        call self % implicit(p, collDat, thisCycle, nextCycle)
         call self % fission(p, collDat, thisCycle, nextCycle)
 
       case(noInteraction)
         ! Do nothing
+
 
       case default
         call fatalError(Here, 'Unsupported MT number: '// numToChar(collDat % MT))

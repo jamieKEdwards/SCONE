@@ -24,7 +24,7 @@ module universalVariables
   integer(shortINt), parameter, public :: COLL_EV = 1, &
                                           BOUNDARY_EV = 2, &
                                           CROSS_EV = 3, &
-                                          LOST_EV  = 4 
+                                          LOST_EV  = 4
 
   ! Create definitions for readability when dealing with positions relative to surfaces
   logical(defBool), parameter, public :: behind = .FALSE., &
@@ -68,7 +68,8 @@ module universalVariables
   ! Physical constants
   real(defReal), parameter :: neutronMass = 939.5654133_defReal, &   ! Neutron mass in MeV/c^2
                               lightSpeed  = 2.99792458e10_defReal, & ! Light speed in cm/s
-                              energyPerFission = 200.0_defReal       ! MeV
+                              energyPerFission = 200.0_defReal, &    ! MeV
+                              kBoltzmann = 1.380649e-23_defReal      ! Bolztman constant in J/K
 
   ! Unit conversion
   real(defReal), parameter :: joulesPerMeV = 1.60218e-13     ! Convert MeV to J
