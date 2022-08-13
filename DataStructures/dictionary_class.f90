@@ -461,7 +461,7 @@ contains
         value = real(self % entries(idx) % int0_alloc, defReal)
 
       case default
-        call fatalError(Here,'Entery under keyword ' // keyword // ' is not a real or int')
+        call fatalError(Here,'Entry under keyword ' // keyword // ' is not a real or int')
 
     end select
 

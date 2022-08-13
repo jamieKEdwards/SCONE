@@ -193,16 +193,15 @@ contains
     self % nuc => ceNeutronNuclide_CptrCast(self % xsData % getNuclide(collDat % nucIdx))
     if(.not.associated(self % mat)) call fatalError(Here, 'Failed to retrieve CE Neutron Nuclide')
 
-    ! Select Main reaction channel
+    ! If TMS, change neutron energy to rest frame for remainder of collision
     if (self % mat % matHasTMS) then
-      call self % nuc % getMicroXSs(microXss, rel_E, p % pRNG)
-      r = p % pRNG % get()
-      collDat % MT = microXss % invert(r)
-    else
-      call self % nuc % getMicroXSs(microXss, p % E, p % pRNG)
-      r = p % pRNG % get()
-      collDat % MT = microXss % invert(r)
+      p % E = rel_E
     end if
+
+    ! Select Main reaction channel
+    call self % nuc % getMicroXSs(microXss, p % E, p % pRNG)
+    r = p % pRNG % get()
+    collDat % MT = microXss % invert(r)
 
   end subroutine sampleCollision
 

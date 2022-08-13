@@ -647,6 +647,8 @@ contains
                      nucIdx   = nucIdx,            &
                      database = database )
 
+    print*, ACE % isFissile()                  
+
     ! Get size of the grid
     Ngrid = ACE % gridSize()
 
