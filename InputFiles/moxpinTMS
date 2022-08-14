@@ -5,7 +5,7 @@ active   400;
 inactive 50;
 XSdata ce;
 dataType ce;
-outputFile TMSout;
+outputFile TMS1800out;
 
 // Specify output format default asciiMATLAB
 //outputFormat asciiJSON;
@@ -107,7 +107,7 @@ nuclearData {
 
 //% --- Water with 550 ppm boron:
      water {
-       temp 601;
+       temp 605;
        composition {
           1001.06    4.7240E-02;
           8016.06    2.3620E-02;
@@ -117,7 +117,7 @@ nuclearData {
            }
 // zircaloy
      clad {
-       temp 601;
+       temp 605;
        composition {
           40000.06    3.9550E-02;
           26000.06    1.3830E-04;
@@ -127,10 +127,10 @@ nuclearData {
           }
 
           fuel {
-            temp 1201;
+            temp 1805;
             composition {
               92235.12    3.0000E-04;
-              92238.00    2.0000E-02;
+              92238.12    2.0000E-02;
                8016.12    4.5100E-02;
                     }
                }
@@ -140,18 +140,6 @@ nuclearData {
             //   92238.06    1.0;
             //         }
             //    }
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

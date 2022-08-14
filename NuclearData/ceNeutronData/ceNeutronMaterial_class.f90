@@ -258,14 +258,12 @@ contains
     matItem => mm_getMatPtr(self % matIdx)
 
     if (matItem % hasTMS) then
-      ! print*, "TMS"
       self % matHasTMS = .true.
 
       if(E /= materialCache(self % matIdx) % E_maj) then
         call self % data % updateMajorantXS(E, rand)
       end if
       matkT = (kBoltzmann * matItem % T) / joulesPerMeV
-      !print*, materialCache(self % matIdx) % TmajXS
       ! retrive mat majorant XSs from cache
 
 
@@ -275,10 +273,12 @@ contains
         nucIdx = self % nuclides(i)
         dens = self % dens(i)
 
+
         ! retrive nuc majorant XSs from cache
-        nucMajXS = nuclideCache(nucIdx) % TmajXS
+        nucMajXS = nuclideCache(nucIdx) % TmajXS * dens
 
         matMajXS = matMajXS - nucMajXS
+
         if (matMajXS < 0) then
           nuc => ceNeutronNuclide_CptrCast(self % data % getNuclide(nucIdx))
           if(.not.associated(nuc)) call fatalError(Here, 'Failed to retive CE Neutron Nuclide')
@@ -303,6 +303,8 @@ contains
 
           ! get relative energy cross section
           call self % data % updateMicroXSs(rel_E, nucIdx, rand)
+
+
 
           ! sample nuclide using ratio of rel E xs to nuc majorant
           P_acc = nuclideCache(nucIdx) % xss % total * dens * dopplerCorrectionFactor(E, A, deltakT) / nucMajXS

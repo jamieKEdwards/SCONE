@@ -75,8 +75,8 @@ module neutronCEstd_class
     class(ceNeutronNuclide),  pointer, public :: nuc    => null()
     class(aceNeutronNuclide), pointer, public :: aceNuc => null()
     class(aceNeutronDatabase), pointer, public:: aceData=> null()
-    integer(shortInt), public :: count = 0
-    integer(shortInt), public :: rejCount = 0
+    integer(longInt), public :: count = 0
+    integer(longInt), public :: rejCount = 0
     real(defReal), public :: frac = 0
 
 

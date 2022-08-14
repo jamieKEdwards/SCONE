@@ -634,12 +634,10 @@ contains
       ! G factor correction for low energies
       corrFact = dopplerCorrectionFactor(E, A, deltakT)
 
-      !print*, "setting nucmaj for nucIdx", nucIdx
-      !print*, "Energy majorant width", E_lower, E_upper
-      cache_nuclideCache(nucIdx) % TmajXS = self % nuclides(nucIdx) % maxXSt(E_lower, E_upper) * dens * corrFact
-      !print*, "nuc maj result", self % nuclides(nucIdx) % maxXSt(E_lower, E_upper)
       ! use function in nuclide to find largest total xs in range of E_upper and E_lower and add to subtotal
-      mat % TmajXS = mat % TmajXS + cache_nuclideCache(nucIdx) % TmajXS
+      cache_nuclideCache(nucIdx) % TmajXS = self % nuclides(nucIdx) % maxXSt(E_lower, E_upper)  * corrFact
+      ! sum nuclide majorants to find mat majorant
+      mat % TmajXS = mat % TmajXS + cache_nuclideCache(nucIdx) % TmajXS * dens
 
     end do
 

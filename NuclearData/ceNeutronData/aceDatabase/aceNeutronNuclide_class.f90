@@ -645,9 +645,7 @@ contains
                      mass     = ACE % AW,          &
                      kT       = ACE % TZ,          &
                      nucIdx   = nucIdx,            &
-                     database = database )
-
-    print*, ACE % isFissile()                  
+                     database = database )                
 
     ! Get size of the grid
     Ngrid = ACE % gridSize()
