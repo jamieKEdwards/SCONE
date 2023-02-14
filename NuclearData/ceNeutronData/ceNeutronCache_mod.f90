@@ -70,6 +70,9 @@ module ceNeutronCache_mod
     real(defReal)         :: TmajXS = ZERO
     integer(shortInt)     :: idx    = 0
     type(neutronMicroXSs) :: xss
+    logical(defBool)      :: needsSabInel = .false.
+    logical(defBool)      :: needsSabEl = .false.
+    logical(defBool)      :: needsUrr = .false.
   end type cacheNucDat
 
   !!

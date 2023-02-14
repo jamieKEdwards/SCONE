@@ -28,7 +28,6 @@ module neutronCEstd_class
   ! Nuclear reactions
   use reactionHandle_inter,          only : reactionHandle
   use uncorrelatedReactionCE_inter,  only : uncorrelatedReactionCE, uncorrelatedReactionCE_CptrCast
-  use elasticNeutronScatter_class,   only : elasticNeutronScatter, elasticNeutronScatter_TptrCast
   use neutronScatter_class,          only : neutronScatter, neutronScatter_TptrCast
   use fissionCE_class,               only : fissionCE, fissionCE_TptrCast
 
@@ -52,19 +51,19 @@ module neutronCEstd_class
   !!  minE    -> minimum energy cut-off [MeV] (default = 1.0E-11)
   !!  maxE    -> maximum energy. Higher energies are set to maximum (not re-rolled) [MeV]
   !!             (default = 20.0)
-  !!  tresh_E -> Energy treshold for explicit treatment of target nuclide movement [-].
-  !!             Target movment is sampled if neutron energy E < kT * tresh_E where
-  !!             kT is target material temperature in [MeV]. (default = 400.0)
-  !!  tresh_A -> Mass treshold for explicit tratment of target nuclide movement [Mn].
-  !!             Target movment is sampled if target mass A < tresh_A. (default = 1.0)
+  !!  thresh_E -> Energy threshold for explicit treatment of target nuclide movement [-].
+  !!              Target movment is sampled if neutron energy E < kT * thresh_E where
+  !!              kT is target material temperature in [MeV]. (default = 400.0)
+  !!  thresh_A -> Mass threshold for explicit tratment of target nuclide movement [Mn].
+  !!              Target movment is sampled if target mass A < thresh_A. (default = 1.0)
   !!
   !! Sample dictionary input:
   !!   collProcName {
-  !!   type            neutronCEstd;
-  !!   #minEnergy      <real>;#
-  !!   #maxEnergy      <real>;#
-  !!   #energyTreshold <real>;#
-  !!   #massTreshold   <real>;#
+  !!   type             neutronCEstd;
+  !!   #minEnergy       <real>;#
+  !!   #maxEnergy       <real>;#
+  !!   #energyThreshold <real>;#
+  !!   #massThreshold   <real>;#
   !!   }
   !!
   type, public, extends(collisionProcessor) :: neutronCEstd
@@ -216,7 +215,6 @@ contains
     class(particleDungeon),intent(inout) :: nextCycle
     type(fissionCE), pointer             :: fission
     type(neutronMicroXSs)                :: microXSs
-
     type(particleState)                  :: pTemp
     real(defReal),dimension(3)           :: r, dir
     integer(shortInt)                    :: n, i
@@ -311,24 +309,27 @@ contains
     type(collisionData), intent(inout)   :: collDat
     class(particleDungeon),intent(inout) :: thisCycle
     class(particleDungeon),intent(inout) :: nextCycle
-    type(elasticNeutronScatter),pointer  :: reac
+    class(uncorrelatedReactionCE), pointer :: reac
+    logical(defBool)                       :: isFixed
     character(100),parameter :: Here = 'elastic (neutronCEstd_class.f90)'
 
     ! Get reaction
-    reac => elasticNeutronScatter_TptrCast( self % xsData % getReaction(collDat % MT, collDat % nucIdx))
+    reac => uncorrelatedReactionCE_CptrCast( self % xsData % getReaction(collDat % MT, collDat % nucIdx))
     if(.not.associated(reac)) call fatalError(Here,'Failed to get elastic neutron scatter')
 
     ! Scatter particle
     collDat % A =  self % nuc % getMass()
     collDat % kT = self % nuc % getkT()
 
-    ! Apply criterion for Free-Gas vs Fixed Target scattering
-    if ((p % E > collDat % kT * self % tresh_E) .and. (collDat % A > self % tresh_A)) then
-      call self % scatterFromFixed(p, collDat, reac)
+    isFixed = (p % E > collDat % kT * self % thresh_E) .and. (collDat % A > self % thresh_A)
 
+    ! Apply criterion for Free-Gas vs Fixed Target scattering
+    if (.not. reac % inCMFrame()) then
+      call self % scatterInLAB(p, collDat, reac)
+    elseif (isFixed) then
+      call self % scatterFromFixed(p, collDat, reac)
     else
       call self % scatterFromMoving(p, collDat, reac)
-
     end if
 
   end subroutine elastic
@@ -354,10 +355,8 @@ contains
     if (reac % inCMFrame()) then
       collDat % A =  self % nuc % getMass()
       call self % scatterFromFixed(p, collDat, reac)
-
     else
       call self % scatterInLAB(p, collDat, reac)
-
     end if
 
     ! Apply weigth change
@@ -390,11 +389,6 @@ contains
     class(uncorrelatedReactionCE), intent(in) :: reac
     real(defReal)                             :: phi    ! Azimuthal scatter angle
     real(defReal)                             :: E_out, mu
-    integer(shortInt)                         :: MT, nucIdx
-
-    ! Read data
-    MT = collDat % MT
-    nucIdx = collDat % nucIdx
 
     ! Sample scattering angles and post-collision energy
     call reac % sampleOut(mu, phi, E_out, p % E, p % pRNG)
@@ -418,11 +412,10 @@ contains
     real(defReal)                              :: phi
     real(defReal)                              :: E_out
     real(defReal)                              :: E_outCM, mu
-    integer(shortInt)                          :: MT, nucIdx
+    integer(shortInt)                          :: MT
 
     ! Read data
     MT     = collDat % MT
-    nucIdx = collDat % nucIdx
 
     ! Sample mu , phi and outgoing energy
     call reac % sampleOut(mu, phi, E_outCM, p % E, p % pRNG)
@@ -432,10 +425,8 @@ contains
 
     if( MT == N_N_elastic) then
       call asymptoticScatter(E_out, mu, collDat % A)
-
     else
       call asymptoticInelasticScatter(E_out, mu, E_outCM, collDat % A)
-
     end if
 
     ! Update particle state
@@ -470,8 +461,6 @@ contains
 
 
     ! Read data
-    MT     = collDat % MT
-    nucIdx = collDat % nucIdx
     A      = collDat % A
     kT     = collDat % kT
 
@@ -551,6 +540,7 @@ contains
     p % E = U_n * U_n
     call p % point(dir_post)
     collDat % muL = dot_product(dir_pre, dir_post)
+
   end subroutine scatterFromMoving
 
 
