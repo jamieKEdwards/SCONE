@@ -427,35 +427,40 @@ contains
     integer(shortInt)                     :: loweridx, idx, i
     real(defReal)                         :: lowerXS, f, e, xs
 
-    ! print *, lowerE, upperE
+
     ! Search for idx, f, and xs for the lower energy limit
     call self % search(idx, f, lowerE)
-    loweridx = idx
 
-    call self % microXSs(xss, idx, f)
-    lowerXS = xss % elasticScatter
+    lowerXS = totalXS(self, idx, f)
 
     ! initially set interpolated lower bound as maximum xs
     maxXS = lowerXS
 
     ! Start loop at next index after lower energy bound
     i = idx + 1
-    !print *, "Start loop"
 
     maxXSLoop: do
 
     !  find XS and energy at index
       xs = self % mainData(ESCATTER_XS, i)
       e = self % eGrid(i)
-      !print *, 'xss ',xs, maxXS
+
       ! when e below upper bound accept or reject new maxXS
-      !print*, 'Energies ', e, upperE
-      if (e <= upperE) then
-        if (maxXS <= xs) then
+      if (e < upperE) then
+
+        if (maxXS < xs) then
           maxXS = xs
         end if
 
       ! otherwise check if xs at next index is larger than exisitng max
+      else if (e==upperE) then
+        ! check if xs of last index is larger
+        if (maxXS < xs) then
+          maxXS = xs
+        end if
+
+        ! as last energy index, end loop here
+        exit maxXSLoop
       else
         if (xs > maxXS) then
 
@@ -468,19 +473,23 @@ contains
             maxXS = xs
           end if
 
+          ! end of loop is reached and loop exited
+          exit maxXSLoop
+
         ! if xs at the next index after energy range is not greater than existing max then exit loop
         else
 
+          ! end of loop is reached and loop exited
           exit maxXSLoop
 
         end if
 
       end if
+
       ! increase counter
       i = i + 1
 
     end do maxXSLoop
-    !print *, "End of Loop"
 
   end function maxXSs
 
@@ -497,15 +506,11 @@ contains
     real(defReal), intent(in)             :: lowerE
     real(defReal), intent(in)             :: upperE
     real(defReal)                         :: maxXS
-    type(neutronMicroXSs)                 :: xss
-    integer(shortInt)                     :: loweridx, idx, i
+    integer(shortInt)                     :: idx, i
     real(defReal)                         :: lowerXS, f, e, xs
 
-    ! print *, lowerE, upperE
     ! Search for idx, f, and xs for the lower energy limit
     call self % search(idx, f, lowerE)
-
-    loweridx = idx
 
     lowerXS = totalXS(self, idx, f)
 
@@ -514,7 +519,6 @@ contains
 
     ! Start loop at next index after lower energy bound
     i = idx + 1
-    !print *, "Start of maxxs loop"
 
     maxXSLoop: do
 
@@ -523,13 +527,21 @@ contains
       e = self % eGrid(i)
 
       ! when e below upper bound accept or reject new maxXS
-      !print*, 'Energies ', e, upperE
-      if (e <= upperE) then
-        if (maxXS <= xs) then
+      if (e < upperE) then
+
+        if (maxXS < xs) then
           maxXS = xs
         end if
-        !print *, 'xss ',xs, maxXS
+
       ! otherwise check if xs at next index is larger than exisitng max
+      else if (e==upperE) then
+        ! check if xs of last index is larger
+        if (maxXS < xs) then
+          maxXS = xs
+        end if
+
+        ! as last energy index, end loop here
+        exit maxXSLoop
       else
         if (xs > maxXS) then
 
@@ -541,20 +553,24 @@ contains
           if (xs > maxXS) then
             maxXS = xs
           end if
+
+          ! end of loop is reached and loop exited
           exit maxXSLoop
+
         ! if xs at the next index after energy range is not greater than existing max then exit loop
         else
-          !print*, "end of max xs loop"
+
+          ! end of loop is reached and loop exited
           exit maxXSLoop
 
         end if
 
       end if
+
       ! increase counter
       i = i + 1
 
     end do maxXSLoop
-    !print *, "End of Loop"
 
   end function maxXSt
 
@@ -645,7 +661,7 @@ contains
                      mass     = ACE % AW,          &
                      kT       = ACE % TZ,          &
                      nucIdx   = nucIdx,            &
-                     database = database )                
+                     database = database )
 
     ! Get size of the grid
     Ngrid = ACE % gridSize()

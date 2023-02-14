@@ -1,6 +1,6 @@
 type eigenPhysicsPackage;
 
-pop      15000;
+pop      50000;
 active   400;
 inactive 50;
 XSdata ce;
@@ -8,7 +8,7 @@ dataType ce;
 outputFile TMS1800out;
 
 // Specify output format default asciiMATLAB
-//outputFormat asciiJSON;
+outputFormat asciiJSON;
 
 collisionOperator { neutronCE {type neutronCEstd;}
 //collisionOperator { neutronCE {type neutronCEstd; DBRCeMin 1.0e-8; DBRCeMax 2.0e-4;}
@@ -24,6 +24,7 @@ inactiveTally {}
 activeTally {
   norm totalPow;
   normVal 100.0;
+  k_eff { type keffAnalogClerk;}
   totalPow  { type collisionClerk; response (fission); fission { type macroResponse; MT -6;}}
  fluxSpectrum {type collisionClerk;
          map {
@@ -32,13 +33,7 @@ activeTally {
          response (flux);
          flux { type fluxResponse;}
          }
- //U8absorption {type collisionClerk;
-  //       map {
-    //          type energyMap; grid log; min 1.0E-11; max 20.0; N 1000;
-      //        }
-      //   response (u8);
-      //   u8 { type microResponse; MT 102; material u8; }
-        //         }
+
 }
 
 geometry {
@@ -107,7 +102,6 @@ nuclearData {
 
 //% --- Water with 550 ppm boron:
      water {
-       temp 605;
        composition {
           1001.06    4.7240E-02;
           8016.06    2.3620E-02;
@@ -117,7 +111,6 @@ nuclearData {
            }
 // zircaloy
      clad {
-       temp 605;
        composition {
           40000.06    3.9550E-02;
           26000.06    1.3830E-04;
@@ -127,7 +120,7 @@ nuclearData {
           }
 
           fuel {
-            temp 1805;
+            temp 1800;
             composition {
               92235.12    3.0000E-04;
               92238.12    2.0000E-02;

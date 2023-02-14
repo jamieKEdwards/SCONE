@@ -78,7 +78,7 @@ module aceNeutronDatabase_class
 
     integer(shortInt),dimension(:),allocatable   :: nucToZaid
     logical(defBool)                             :: hasUrr
-    logical(defBool)                             :: hasDBRC
+    logical(defBool)                             :: hasDBRC = .false.
     type(intMap)                                 :: intMapDBRCnucs
 
   contains
@@ -455,6 +455,7 @@ contains
     associate (nucCache => cache_nuclideCache(nucIdx), &
                nuc      => self % nuclides(nucIdx)     )
 
+
       if (nuc % hasProbTab .and. E >= nuc % urrE(1) .and. E <= nuc % urrE(2)) then
         call self % updateMicroXSs(E, nucIdx, rand)
       else
@@ -539,6 +540,8 @@ contains
     ! Upper and lower energy limits within the highest cross section should be found
     E_upper = (sqrt(E) + alpha)**2
     E_lower = (sqrt(E) - alpha)**2
+
+
 
 
     ! Call through system minimum and maximum energies
