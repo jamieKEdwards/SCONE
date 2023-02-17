@@ -535,11 +535,19 @@ contains
 
 
     ! Factor for varying the truncation factor for the maxwell boltzman distribuition
-    alpha = 4 * sqrt( kT / A )
+    !alpha = 4 * sqrt( kT / A )
 
     ! Upper and lower energy limits within the highest cross section should be found
-    E_upper = (sqrt(E) + alpha)**2
-    E_lower = (sqrt(E) - alpha)**2
+    !E_upper = (sqrt(E) + alpha)**2
+    !E_lower = (sqrt(E) - alpha)**2
+
+    alpha = 4 / (sqrt( E * A / kT ))
+
+
+    E_upper = E * (1 + alpha) * (1 + alpha)
+    E_lower = E * (1 - alpha) * (1 - alpha) 
+
+
 
 
 

@@ -321,7 +321,7 @@ contains
     collDat % A =  self % nuc % getMass()
     collDat % kT = self % nuc % getkT()
 
-    isFixed = (p % E > collDat % kT * self % thresh_E) .and. (collDat % A > self % thresh_A)
+    isFixed = (p % E > collDat % kT * self % tresh_E) .and. (collDat % A > self % tresh_A)
 
     ! Apply criterion for Free-Gas vs Fixed Target scattering
     if (.not. reac % inCMFrame()) then
@@ -444,7 +444,7 @@ contains
     class(neutronCEstd), intent(inout)         :: self
     class(particle), intent(inout)             :: p
     type(collisionData),intent(inout)          :: collDat
-    type(elasticNeutronScatter), intent(in)    :: reac
+    class(uncorrelatedReactionCE), pointer :: reac
     !type(intMap), intent(in)                   :: map
     integer(shortInt)                          :: MT, nucIdx
     real(defReal)                              :: A, kT, mu
@@ -458,11 +458,13 @@ contains
     logical(defBool)                           :: eRange, nucDBRC
     character(100), parameter :: Here = 'Scatter From Moving (neutronCEstd_class.f90)'
     !class(aceNeutronNuclide), pointer, public  :: aceNuc => null()
-
+    nucIdx = 0
 
     ! Read data
     A      = collDat % A
     kT     = collDat % kT
+    MT     = collDat % MT
+    nucIdx = collDat % nucIdx
 
     ! Get neutron direction and velocity
     dir_pre = p % dirGlobal()
@@ -502,6 +504,7 @@ contains
       !print *, "DBRC conditions being satisfied. "
       !print *, nucIdx
       !use int map of DBRC nuclides and to change nucIdx
+      !print *, nucIdx, "this is the issue"
       nucIdx = self % aceData % intMapDBRCnucs % get(nucIdx)
       !print *, "New nucIdx", nucIdx
       ! set temp majorant
