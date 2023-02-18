@@ -36,7 +36,8 @@ module neutronCEstd_class
 
   ! Scattering procedures
   use scatteringKernels_func, only : asymptoticScatter, targetVelocity_constXS, targetVelocity_DBRCXS, SERPtargetVelocity_DBRCXS, &
-                                     asymptoticInelasticScatter
+                                     asymptoticInelasticScatter, SERP2targetVelocity_DBRCXS
+
   implicit none
   private
 
@@ -501,10 +502,7 @@ contains
 
     if (eRange .and. nucDBRC) then
 
-      !print *, "DBRC conditions being satisfied. "
-      !print *, nucIdx
-      !use int map of DBRC nuclides and to change nucIdx
-      !print *, nucIdx, "this is the issue"
+
       nucIdx = self % aceData % intMapDBRCnucs % get(nucIdx)
       !print *, "New nucIdx", nucIdx
       ! set temp majorant
@@ -512,6 +510,7 @@ contains
       !print *, "Tmaj = ",TmajXS
       ! Reassign pointer for the 0K nuclide
       self % aceNuc => aceNeutronNuclide_CptrCast(self % xsData % getNuclide(nucIdx))
+
       ! use dbrc (non constant cross section) to sample target velocity
       V_t = targetVelocity_DBRCXS(self % aceNuc, p % E, dir_pre, A, kT, p % pRNG, TmajXS)
     else
