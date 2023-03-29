@@ -189,9 +189,11 @@ contains
   end function getNuclide
 
   !!
-  !! returns total micro cross section given
+  !! Returns total micro cross section given thermal motion of target
   !!
-  !! See ceNeutronDatabase for more details
+  !! #####--------THIS IS NOT CALLED ANYWHERE AT THE MOMENT! ----------#####
+  !!
+  !!
   !!
   function getRelEMicroXS(self, E, nucIdx, matkT, rand) result(relEMicroXS)
     class(aceNeutronDatabase), intent(in) :: self
@@ -411,9 +413,13 @@ contains
     class(aceNeutronDatabase), intent(in) :: self
     real(defReal), intent(in)             :: E
     integer(shortInt), intent(in)         :: matIdx
+    type(materialItem), pointer           :: matItem
     class(RNG), intent(inout)             :: rand
     integer(shortInt)                     :: i, nucIdx
-    real(defReal)                         :: dens
+    real(defReal)                         :: dens, corrFact
+    real(defReal)                         :: deltakT, matkT, kT
+    real(defReal)                         :: A
+    character(100), parameter :: Here = 'updateMacroXSs (aceNeutronDatabase_class.f90)'
     associate (mat => cache_materialCache(matIdx))
       ! Set new energy
       mat % E_tot  = E
@@ -422,20 +428,56 @@ contains
       ! Clean current xss
       call mat % xss % clean()
 
-      ! Construct microscopic XSs
-      do i = 1, size(self % materials(matIdx) % nuclides)
-        dens   = self % materials(matIdx) % dens(i)
-        nucIdx = self % materials(matIdx) % nuclides(i)
+      matItem => mm_getMatPtr(matIdx)
 
-        ! Update if needed
-        if(cache_nuclideCache(nucIdx) % E_tail /= E) then
+      !if (matItem % hasTMS) then
+        ! Construct microscopic XSs
+      !  do i = 1, size(self % materials(matIdx) % nuclides)
+      !    dens   = self % materials(matIdx) % dens(i)
+      !    nucIdx = self % materials(matIdx) % nuclides(i)
+      !    kT = self % nuclides(nucIdx) % getkT()
+      !    A = self % nuclides(nucIdx) % getMass()
+      !    deltakT = matkT - kT
+!
+!          !call fatal error if material temp is lower then base nuclide temps
+!          if (deltakT < -1e-6) then
+!            call fatalError(Here,"Material temperature must be greater than the nuclear data temperature. Try a higher temp.")
+!          end if
+!
+!          ! G factor correction for low energies
+!          corrFact = dopplerCorrectionFactor(E, A, deltakT)
+!
+!          ! Update if needed
+!          !if(cache_nuclideCache(nucIdx) % E_tail /= E) then
+!            call self % updateMicroXSs(E, nucIdx, rand)
+!          !end if
+!
+!          ! Add microscopic XSs
+!        end do
 
-          call self % updateMicroXSs(E, nucIdx, rand)
-        end if
 
-        ! Add microscopic XSs
-        call mat % xss % add(cache_nuclideCache(nucIdx) % xss, dens)
-      end do
+
+
+
+!      else
+        ! Construct microscopic XSs
+        do i = 1, size(self % materials(matIdx) % nuclides)
+          dens   = self % materials(matIdx) % dens(i)
+          nucIdx = self % materials(matIdx) % nuclides(i)
+
+          ! Update if needed
+          if(cache_nuclideCache(nucIdx) % E_tail /= E) then
+
+            call self % updateMicroXSs(E, nucIdx, rand)
+          end if
+
+          ! Add microscopic XSs
+          call mat % xss % add(cache_nuclideCache(nucIdx) % xss, dens)
+        end do
+
+!      end if
+
+
     end associate
 
   end subroutine updateMacroXSs
@@ -512,14 +554,14 @@ contains
 
   !!
   !! Subroutine to update the temperature majorant in a given nuclide at given temperature
-  !! The function finds the upper and lower limits of the energy range from which the Tmaj is found.
+  !! The function finds the upper and lower limits of the energy range from which the TmajXS is found in aceNeutronNuclide.
   !! These xs for these energies are found and all inbetween, the maximum is taken and returned as TmajXS
   !!
   !!Args:
   !!   A [in]         -> Nuclide mass number
   !!   kT [in]        -> Thermal energy of nuclide
   !!   E [in]         -> Energy of neutron incident to target for which temp majorant needs to be found
-  !!   TmajXS [out]   -> Temperature majorant
+  !!   TmajXS [out]   -> Temperature majorant cross section
   !!
 
   function updateTempMicroMajorantXS(self, E, kT, A, nucIdx) result(TmajXs)
@@ -541,15 +583,12 @@ contains
     !E_upper = (sqrt(E) + alpha)**2
     !E_lower = (sqrt(E) - alpha)**2
 
+    ! Same as above but simpler implementation
     alpha = 4 / (sqrt( E * A / kT ))
 
-
+    ! Upper and lower energy limits within the highest cross section should be found
     E_upper = E * (1 + alpha) * (1 + alpha)
-    E_lower = E * (1 - alpha) * (1 - alpha) 
-
-
-
-
+    E_lower = E * (1 - alpha) * (1 - alpha)
 
 
     ! Call through system minimum and maximum energies
@@ -563,11 +602,9 @@ contains
     if (E_max < E_lower) then
       E_upper = E_max
     end if
-    !print*, E_lower, E, E_upper
+
     ! use function in nuclide to find largest scattering xs in range of E_upper and E_lower
-    TmajXS = self % nuclides(nucIdx) % maxXSs(E_lower, E_upper)
-
-
+    TmajXS = self % nuclides(nucIdx) % maxXSs2(E_lower, E_upper)
 
   end function updateTempMicroMajorantXS
 
@@ -755,14 +792,13 @@ end subroutine updateTempMacroMajorantXS
       ! Call through list of DBRC nucs
       call dict % get(DBRCidxs, 'DBRC')
       allocate(DBRC_nucs(size(DBRCidxs)))
+
       ! Add all DBRC nucs to nucSet
       do i = 1, size(DBRCidxs)
         DBRC_nucs(i) = numToChar(DBRCidxs(i))
         DBRC_nucs(i) = trim(DBRC_nucs(i))//'.00'
         call nucSet % add(DBRC_nucs(i), IN_SET)
       end do
-      ! initiialise map of DBRC nucs and indexes
-      !call self % init_DBRC(DBRC_nucs, nucSet, nucIdxs, self % intMapDBRCnucs)
 
     end if
 
@@ -872,13 +908,11 @@ end subroutine updateTempMacroMajorantXS
         nucDBRCtemp = nucDBRC(1:5)
         if (nucDBRCtemp == nuc0Ktemp) then
           call map % add(nucSet % atVal(j), idx)
-          !print*, nucSet % atVal(j), idx
           self % nuclides(nucSet % atVal(j)) % isNucDBRC = .true.
         end if
         j = nucSet % next(j)
       end do
     end do
-
 
   end subroutine init_DBRC
 

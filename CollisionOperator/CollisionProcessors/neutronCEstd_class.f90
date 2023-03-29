@@ -445,8 +445,7 @@ contains
     class(neutronCEstd), intent(inout)         :: self
     class(particle), intent(inout)             :: p
     type(collisionData),intent(inout)          :: collDat
-    class(uncorrelatedReactionCE), pointer :: reac
-    !type(intMap), intent(in)                   :: map
+    class(uncorrelatedReactionCE), pointer     :: reac
     integer(shortInt)                          :: MT, nucIdx
     real(defReal)                              :: A, kT, mu
     real(defReal),dimension(3)                 :: V_n           ! Neutron velocity (vector)
@@ -485,34 +484,22 @@ contains
     ! Sample velocity of target with constant xs or with dbrc depending on switch and input files
     ! dbrc requires energy less than emax, greater than emin and nuclide to be listed with 0K XS
     eRange = ((p % E <= self % DBRCeMax) .and. (self % DBRCeMin <= p % E))
-
-
-    !print *, "eRange", eRange
-    !print *, "particle energy", p % E
-    !print *, "eRangeMaxinput", (self % DBRCeMax)
-    !print *, "eRangeMax", (p % E <= self % DBRCeMax)
-    !print *, "eRangeMin", (self % DBRCeMin <= p % E)
-
-
-
     nucDBRC = ( self % aceNuc % isNucDBRC .and. self % aceData % hasDBRC)
-    !print *, "nuc and databse", nucDBRC
-    !print *, "Nuclide flag", self % aceNuc % isNucDBRC
-    !print *, "dataDBRC", self % aceData % hasDBRC
 
     if (eRange .and. nucDBRC) then
 
-
+      !Retrive 0K nuclide index from dbrc nuclide map
       nucIdx = self % aceData % intMapDBRCnucs % get(nucIdx)
-      !print *, "New nucIdx", nucIdx
-      ! set temp majorant
-      TmajXS = self % aceData % updateTempMicroMajorantXS(p % E, kT, A, nucIdx)
-      !print *, "Tmaj = ",TmajXS
+
       ! Reassign pointer for the 0K nuclide
       self % aceNuc => aceNeutronNuclide_CptrCast(self % xsData % getNuclide(nucIdx))
 
+      ! set temp majorant
+      TmajXS = self % aceData % updateTempMicroMajorantXS(p % E, kT, A, nucIdx)
+
       ! use dbrc (non constant cross section) to sample target velocity
       V_t = targetVelocity_DBRCXS(self % aceNuc, p % E, dir_pre, A, kT, p % pRNG, TmajXS)
+
     else
       V_t = targetVelocity_constXS(p % E, dir_pre, A, kT, p % pRNG)
     end if

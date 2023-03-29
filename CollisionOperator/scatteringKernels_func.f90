@@ -233,6 +233,8 @@ contains
   !! so that V_t*V_t=E_t with E_t being kinetic energy of a NEUTRON traveling with TARGET VELOCITY
   !! (note that it is not a kinetic energy of the target).
   !!
+  !! This is the initial implementation which most closely follows the implementation of constant XS approach
+  !!
   !!
   function targetVelocity_DBRCXS(aceNuc, E, dir, A, kT, rand, TmajXS) result (V_t)
     class(aceNeutronNuclide), intent(in)    :: aceNuc
@@ -264,20 +266,18 @@ contains
     alpha = 2.0 / (Y * sqrt(PI) + 2.0)
 
     rejectionLoop: do
-      !print*, "Rejected"
+
       ! Obtain random numbers
       r1 = rand % get()
       r2 = rand % get()
       r3 = rand % get()
-      r4 = rand % get()
 
       ! Sample X = beta * V_t
+      ! Uses helper functions below
       if ( r1 > alpha ) then
         X = sample_x2expx2(rand)
-
       else
         X = sample_x3expx2(rand)
-
       end if
 
       ! Sample polar angle of target velocity wrt. neutron direction
@@ -292,37 +292,24 @@ contains
       ! Accept or reject mu
       if (P_acc < r3) cycle
 
-      !print*, rel_v
       ! Relative energy = relative velocity **2 due to sqrt(Mn/2) scaling factor
       rel_E = (rel_v**2 * kT / A)
-      !print*, rel_E, E, E/rel_E -1
 
-
-      !print*, rel_E
       ! Find scattering xs of target at relative velocity (rel_v), done through calling subroutines from neutronNuclide
       call aceNuc % search(idx, f, rel_E)
-      !call aceNuc % scatterXS(xs, idx, f)
       xs_rel_v = aceNuc % scatterXS(idx, f)
-      !print *, "rel micro scatter xs", xs_rel_v
 
       ! Introduce DBRC acceptance condition
-      ! first term is ratio of cross sections, second term is the C' term from Becker 2009
-      DBRC_acc = (xs_rel_v / TmajXS) !* ((1 + (Y * sqrt(PI)) / 2) / (Y * sqrt(PI)))
-      !print *, "DBRC_acc", DBRC_acc
+      DBRC_acc = (xs_rel_v / TmajXS)
+      r4 = rand % get()
 
       ! accept or reject with DBRC
       if (DBRC_acc > r4) then
-        !print *, "ACCEPTED"
         exit rejectionLoop
-      else
-        !print *, "rejected"
       end if
-
 
     end do rejectionLoop
 
-    !End associate
-    !print*, "Accepted"
     ! Calculate azimithal angle for traget and obtain target direction
     r5 = rand % get()
     phi = 2.0 * PI * r5
@@ -341,6 +328,9 @@ contains
   !! so that V_t*V_t=E_t with E_t being kinetic energy of a NEUTRON traveling with TARGET VELOCITY
   !! (note that it is not a kinetic energy of the target).
   !!
+  !! Second implementation using serpent sampling functions listed below and more in line with the
+  !! style and variables used in the serpent implementation. Exact Serpent can be found in targetvelocity.c
+  !!
   !!
   function SERPtargetVelocity_DBRCXS(aceNuc, E, dir, A, kT, rand, TmajXS) result (V_t)
     class(aceNeutronNuclide), intent(in)    :: aceNuc
@@ -358,10 +348,6 @@ contains
     real(defReal)                           :: X, Y
     real(defReal)                           :: r1, r2, r3, r4, r5
     real(defreal)                           :: rel_v2, rel_E, xs_rel_v, f, rnd1
-
-    !print *, "DBRC Target velocity function being used"
-    ! Pointer to aceNeutronNuclide
-    !associate(nuc => aceNeutronNuclide(nucIdx))
 
     ! Calculate neutron Y = beta *V_n
     ! beta = sqrt(A*Mn/2kT). Note velocity scaling by sqrt(Mn/2).
@@ -451,6 +437,9 @@ contains
   !! so that V_t*V_t=E_t with E_t being kinetic energy of a NEUTRON traveling with TARGET VELOCITY
   !! (note that it is not a kinetic energy of the target).
   !!
+  !! 3rd implementation, this is meant to fully represent the serpent implementation in its full form.
+  !! If not all, most variable names should match the serpent implementation in targetvelocity.c
+  !!
   !!
   function SERP2targetVelocity_DBRCXS(aceNuc, E, dir, A, kT, rand, TmajXS) result (V_t)
     class(aceNeutronNuclide), intent(in)    :: aceNuc
@@ -501,14 +490,14 @@ contains
             if ( s < 1.0 ) exit
           end do
 
-          z2 = -r1*log(s)/s - log(rand % get());
+          z2 = -r1*log(s)/s - log(rand % get())
 
         end if
 
         z = sqrt(z2)
         c = 2.0 * rand % get() - 1.0
 
-        x2 = ycn * ycn + z2 - 2 * ycn * z * c
+        x2 = ycn*ycn + z2 - 2*ycn*z*c
 
         rnd1 = rand % get() * (ycn + z)
 
@@ -517,7 +506,7 @@ contains
       !print*, rel_v
       ! Relative energy = relative velocity **2 due to sqrt(Mn/2) scaling factor
       rel_E = (x2 / ar)
-      print*, rel_E, E, E/rel_E -1
+      !print*, rel_E, E, E/rel_E -1
 
 
 
@@ -550,7 +539,7 @@ contains
     r5 = rand % get()
     phi = 2.0 * PI * r5
 
-    V_t = rotateVector(dir, mu, phi)
+    V_t = rotateVector(dir, c, phi)
 
     ! Scale target direction by magnitude of velocity
     V_t = V_t * sqrt(z2/ar)
@@ -692,6 +681,8 @@ contains
   !! Function to return the doppler broadening low energy correction factor
   !! Common notation for this constant is g_E(E, A, kT) or g(v).
   !! Energy Limits taken from Serpent 2.1.31
+  !!
+  !! This is used in doppler broadening of cross sections used with TMS
   !!
   function dopplerCorrectionFactor(E, A, kT) result(g)
     real(defReal), intent(in) :: A
