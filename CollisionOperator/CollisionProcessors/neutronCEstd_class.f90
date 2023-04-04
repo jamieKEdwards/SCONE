@@ -2,6 +2,7 @@ module neutronCEstd_class
 
   use numPrecision
   use endfConstants
+  use universalVariables
   use genericProcedures,             only : fatalError, rotateVector, numToChar
   use dictionary_class,              only : dictionary
   use RNG_class,                     only : RNG
@@ -24,6 +25,7 @@ module neutronCEstd_class
   use ceNeutronNuclide_inter,        only : ceNeutronNuclide, ceNeutronNuclide_CptrCast
   use aceNeutronNuclide_class,       only : aceNeutronNuclide_CptrCast
   use aceNeutronNuclide_class,       only : aceNeutronNuclide
+  use materialMenu_mod,              only : materialItem, mm_getMatPtr => getMatPtr
 
   ! Nuclear reactions
   use reactionHandle_inter,          only : reactionHandle
@@ -35,8 +37,8 @@ module neutronCEstd_class
   use neutronXsPackages_class,       only : neutronMicroXSs
 
   ! Scattering procedures
-  use scatteringKernels_func, only : asymptoticScatter, targetVelocity_constXS, targetVelocity_DBRCXS, SERPtargetVelocity_DBRCXS, &
-                                     asymptoticInelasticScatter, SERP2targetVelocity_DBRCXS
+  use scatteringKernels_func, only : asymptoticScatter, targetVelocity_constXS, targetVelocity_DBRCXS,  &
+                                     asymptoticInelasticScatter, targetVelocity_relE
 
   implicit none
   private
@@ -215,12 +217,14 @@ contains
     class(particleDungeon),intent(inout) :: thisCycle
     class(particleDungeon),intent(inout) :: nextCycle
     type(fissionCE), pointer             :: fission
+    type(materialItem), pointer          :: matItem
     type(neutronMicroXSs)                :: microXSs
     type(particleState)                  :: pTemp
     real(defReal),dimension(3)           :: r, dir
     integer(shortInt)                    :: n, i
     real(defReal)                        :: wgt, w0, rand1, E_out, mu, phi
     real(defReal)                        :: sig_nufiss, sig_tot, k_eff
+    real(defReal)                        :: kT, matkT, deltakT, rel_E, A
     character(100),parameter             :: Here = 'implicit (neutronCEstd_class.f90)'
 
     ! Generate fission sites if nuclide is fissile
@@ -231,7 +235,40 @@ contains
       k_eff = p % k_eff            ! k_eff for normalisation
       rand1 = p % pRNG % get()     ! Random number to sample sites
 
-      call self % nuc % getMicroXSs(microXSs, p % E, p % pRNG)
+
+      matItem => mm_getMatPtr(p % matIdx())
+
+      !! if material uses TMS then relative energy is needed to be sampled for
+      !! the cross section look ups which determine fission sites.
+      !!
+      !! Althought the information below is to find `broadened' cross sections for TMS, the dopplerCorrectionFactor
+      !! is not used as it would cancel out in the sig_nufiss/sig_tot
+      !!
+      if (matItem % hasTMS) then
+
+        matkT = (kBoltzmann * matItem % T) / joulesPerMeV
+        ! Do stuff to find TMS details kT ect
+        ! bring throug material and nuclide information
+        kT = self % nuc % getkT()
+        A = self % nuc % getMass()
+        deltakT = matkT - kT
+        rel_E = targetVelocity_relE(p % E, A, deltakT, p % pRNG)
+
+        ! avoid sampled relative energy from MB dist extending into energies outside system range
+        if (rel_E < self % minE) then
+          rel_E = self % minE
+        end if
+
+        if (self % maxE < rel_E) then
+          rel_E = self % maxE
+        end if
+
+        ! then look up cross sections with relative E
+        call self % nuc % getMicroXSs(microXSs, rel_E, p % pRNG)
+      else
+        call self % nuc % getMicroXSs(microXSs, p % E, p % pRNG)
+      end if
+
       sig_nufiss = microXSs % nuFission
       sig_tot    = microXSs % total
 
@@ -305,23 +342,34 @@ contains
 !! All CE elastic scattering happens in the CM frame
 !!
 subroutine elastic(self, p, collDat, thisCycle, nextCycle)
-  class(neutronCEstd), intent(inout)    :: self
-  class(particle), intent(inout)        :: p
-  type(collisionData), intent(inout)    :: collDat
-  class(particleDungeon),intent(inout)  :: thisCycle
-  class(particleDungeon),intent(inout)  :: nextCycle
-  class(uncorrelatedReactionCE), pointer :: reac
-  logical(defBool)                       :: isFixed, nucDBRC
-  integer(shortInt)                          :: nucIdx
+  class(neutronCEstd), intent(inout)      :: self
+  class(particle), intent(inout)          :: p
+  type(collisionData), intent(inout)      :: collDat
+  class(particleDungeon),intent(inout)    :: thisCycle
+  class(particleDungeon),intent(inout)    :: nextCycle
+  class(uncorrelatedReactionCE), pointer  :: reac
+  type(materialItem), pointer             :: matItem
+  logical(defBool)                        :: isFixed, nucDBRC
+  integer(shortInt)                       :: nucIdx
+  real(defReal)                           :: matkT
   character(100),parameter :: Here = 'elastic (neutronCEstd_class.f90)'
 
   ! Get reaction
   reac => uncorrelatedReactionCE_CptrCast( self % xsData % getReaction(collDat % MT, collDat % nucIdx))
   if(.not.associated(reac)) call fatalError(Here,'Failed to get elastic neutron scatter')
 
+
+  matItem => mm_getMatPtr(p % matIdx())
+  if (matItem % hasTMS) then
+    matkT = (kBoltzmann * matItem % T) / joulesPerMeV
+    collDat % kT = matkT
+  else
+    collDat % kT = self % nuc % getkT()
+  end if
+
   ! Scatter particle
   collDat % A =  self % nuc % getMass()
-  collDat % kT = self % nuc % getkT()
+
   nucIdx = collDat % nucIdx
 
   !cast pointer to aceNeutronNuclide
