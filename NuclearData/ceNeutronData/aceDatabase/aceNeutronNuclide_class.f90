@@ -132,7 +132,6 @@ module aceNeutronNuclide_class
     procedure :: init_urr
     procedure :: display
     procedure :: maxXSs
-    procedure :: maxXSs2
     procedure :: maxXSt
 
   end type aceNeutronNuclide
@@ -494,88 +493,6 @@ contains
 
   end function maxXSs
 
-
-  !! Function to calculate the maximum scattering cross section within an energy range given by an upper and lower energy bound.
-  !!
-  !!
-  !!Args:
-  !!   upperE [in]    -> Upper bound of energy range
-  !!   upperE [in]    -> Upper bound of energy range
-  !!   maxXS [out]    -> Maximum scattering cross section within energy range
-  !!
-  function maxXSs2(self, lowerE, upperE) result (maxXS)
-    class(aceNeutronNuclide), intent(in)  :: self
-    real(defReal), intent(in)             :: lowerE
-    real(defReal), intent(in)             :: upperE
-    real(defReal)                         :: maxXS
-    type(neutronMicroXSs)                 :: xss
-    integer(shortInt)                     :: loweridx, idx, i
-    real(defReal)                         :: lowerXS, f, e, xs
-
-
-    ! Search for idx, f, and xs for the lower energy limit
-    call self % search(idx, f, lowerE)
-    f=1
-    lowerXS = scatterXS(self, idx, f)
-
-    ! initially set interpolated lower bound as maximum xs
-    maxXS = lowerXS
-
-    ! Start loop at next index after lower energy bound
-    i = idx + 1
-
-    maxXSLoop: do
-
-    !  find XS and energy at index
-      xs = self % mainData(ESCATTER_XS, i)
-      e = self % eGrid(i)
-
-      ! when e below upper bound accept or reject new maxXS
-      if (e < upperE) then
-
-        if (maxXS < xs) then
-          maxXS = xs
-        end if
-
-      ! otherwise check if xs at next index is larger than exisitng max
-      else if (e==upperE) then
-        ! check if xs of last index is larger
-        if (maxXS < xs) then
-          maxXS = xs
-        end if
-
-        ! as last energy index, end loop here
-        exit maxXSLoop
-      else
-        if (xs > maxXS) then
-
-
-          xs =  self % mainData(ESCATTER_XS, i-1)
-
-          ! Check if new interpolated xs is larger than exisitng maximum, if yes then reassign
-          if (xs > maxXS) then
-            maxXS = xs
-          end if
-
-          ! end of loop is reached and loop exited
-          exit maxXSLoop
-
-        ! if xs at the next index after energy range is not greater than existing max then exit loop
-        else
-
-          ! end of loop is reached and loop exited
-          exit maxXSLoop
-
-        end if
-
-      end if
-
-      ! increase counter
-      i = i + 1
-
-    end do maxXSLoop
-
-  end function maxXSs2
 
   !! Function to calculate the maximum total cross section within an energy range given by an upper and lower energy bound.
   !!

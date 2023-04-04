@@ -229,7 +229,8 @@ contains
     end if
 
     ! Check Cache and update if needed
-    if(materialCache(matIdx) % E_tot /= p % E) call self % updateTotalMatXS(p % E, matIdx, p % pRNG)
+    !if(materialCache(matIdx) % E_tot /= p % E) 
+    call self % updateTotalMatXS(p % E, matIdx, p % pRNG)
 
     ! Return Cross-Section
     xs = materialCache(matIdx) % xss % total
@@ -287,5 +288,5 @@ contains
 
   end function ceNeutronDatabase_CptrCast
 
-    
+
 end module ceNeutronDatabase_inter

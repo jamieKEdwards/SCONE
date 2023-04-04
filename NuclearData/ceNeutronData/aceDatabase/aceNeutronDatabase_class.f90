@@ -56,7 +56,7 @@ module aceNeutronDatabase_class
   !! Sample input:
   !!   nuclearData {
   !!   handles {
-  !!   ce {type aceNeutronDatabase; DBRC (92238.00 94240.00); ures <1 or 0>; aceLibrary <nuclear data path> ;} }
+  !!   ce {type aceNeutronDatabase; DBRC (92238 94240); ures <1 or 0>; aceLibrary <nuclear data path> ;} }
   !!
   !! Public Members:
   !!   nuclides  -> array of aceNeutronNuclides with data
@@ -336,11 +336,7 @@ contains
 
 
       if (matItem % hasTMS) then
-        if (mat % E_maj /= E) then
-          call updateTempMacroMajorantXS(self, E, matIdx)
-        end if
-        mat % xss % total = mat % TmajXS
-
+        call updateTempMacroMajorantXS(self, E, matIdx)
       else
 
         ! Construct total macro XS
@@ -365,6 +361,9 @@ contains
   !! Make sure that the majorant of ALL Active materials is at energy E
   !! in ceNeutronChache
   !!
+  !! This returns the global majorant, which if TMS is being used is the max of
+  !! either material totalXS or material TmajXS for TMS flaged materials
+  !!
   !! See ceNeutronDatabase for more details
   !!
   subroutine updateMajorantXS(self, E, rand)
@@ -386,17 +385,12 @@ contains
 
         matItem => mm_getMatPtr(matIdx)
 
-          if (matItem % hasTMS) then
-            if( cache_materialCache(matIdx) % E_maj /= E) then
-              call self % updateTempMacroMajorantXS(E, matIdx)
-            end if
-            maj % xs = max(maj % xs, cache_materialCache(matIdx) % TmajXS)
-          else
-            if( cache_materialCache(matIdx) % E_tot /= E) then
-              call self % updateTotalMatXS(E, matIdx, rand)
-            end if
-            maj % xs = max(maj % xs, cache_materialCache(matIdx) % xss % total)
-          end if
+
+        if( cache_materialCache(matIdx) % E_tot /= E) then
+          call self % updateTotalMatXS(E, matIdx, rand)
+        end if
+        maj % xs = max(maj % xs, cache_materialCache(matIdx) % xss % total)
+
 
       end do
     end associate
@@ -418,7 +412,7 @@ contains
     integer(shortInt)                     :: i, nucIdx
     real(defReal)                         :: dens, corrFact
     real(defReal)                         :: deltakT, matkT, kT
-    real(defReal)                         :: A
+    real(defReal)                         :: A, E_min, E_max, rel_E
     character(100), parameter :: Here = 'updateMacroXSs (aceNeutronDatabase_class.f90)'
     associate (mat => cache_materialCache(matIdx))
       ! Set new energy
@@ -429,37 +423,58 @@ contains
       call mat % xss % clean()
 
       matItem => mm_getMatPtr(matIdx)
+      if(.not.associated(matItem)) then
+        call fatalError(Here, "Failed to get mat")
+      end if
 
-      !if (matItem % hasTMS) then
+      if (matItem % hasTMS) then
+
+        matkT = (kBoltzmann * matItem % T) / joulesPerMeV
         ! Construct microscopic XSs
-      !  do i = 1, size(self % materials(matIdx) % nuclides)
-      !    dens   = self % materials(matIdx) % dens(i)
-      !    nucIdx = self % materials(matIdx) % nuclides(i)
-      !    kT = self % nuclides(nucIdx) % getkT()
-      !    A = self % nuclides(nucIdx) % getMass()
-      !    deltakT = matkT - kT
-!
-!          !call fatal error if material temp is lower then base nuclide temps
-!          if (deltakT < -1e-6) then
-!            call fatalError(Here,"Material temperature must be greater than the nuclear data temperature. Try a higher temp.")
-!          end if
-!
-!          ! G factor correction for low energies
-!          corrFact = dopplerCorrectionFactor(E, A, deltakT)
-!
-!          ! Update if needed
-!          !if(cache_nuclideCache(nucIdx) % E_tail /= E) then
-!            call self % updateMicroXSs(E, nucIdx, rand)
-!          !end if
-!
-!          ! Add microscopic XSs
-!        end do
+        do i = 1, size(self % materials(matIdx) % nuclides)
+          dens   = self % materials(matIdx) % dens(i)
+          nucIdx = self % materials(matIdx) % nuclides(i)
+          kT = self % nuclides(nucIdx) % getkT()
+          A = self % nuclides(nucIdx) % getMass()
+          deltakT = matkT - kT
+
+          !call fatal error if material temp is lower then base nuclide temps
+          if (deltakT < -1e-8) then
+            call fatalError(Here,"Material temperature must be greater than the nuclear data temperature. Try a higher temp.")
+          end if
+
+          rel_E = targetVelocity_relE(E, A, deltakT, rand)
+
+          ! Call through system minimum and maximum energies
+          call self % energyBounds(E_min, E_max)
+
+          ! avoid sampled relative energy from MB dist extending into energies outside system range
+          if (rel_E < E_min) then
+            rel_E = E_min
+          end if
+
+          if (E_max < rel_E) then
+            rel_E = E_max
+          end if
+
+          ! G factor correction for low energies
+          corrFact = dopplerCorrectionFactor(E, A, deltakT)
+
+          ! Update if needed
+          !if(cache_nuclideCache(nucIdx) % E_tail /= E) then
+          !print*, "updating microXSs with rel_E"
+          call self % updateMicroXSs(rel_E, nucIdx, rand)
+          !end if
+
+          ! Add microscopic XSs
+          call mat % xss % add(cache_nuclideCache(nucIdx) % xss, dens, corrFact)
+        end do
 
 
 
 
 
-!      else
+      else
         ! Construct microscopic XSs
         do i = 1, size(self % materials(matIdx) % nuclides)
           dens   = self % materials(matIdx) % dens(i)
@@ -475,7 +490,7 @@ contains
           call mat % xss % add(cache_nuclideCache(nucIdx) % xss, dens)
         end do
 
-!      end if
+      end if
 
 
     end associate
@@ -553,7 +568,9 @@ contains
   end subroutine updateMicroXSs
 
   !!
-  !! Subroutine to update the temperature majorant in a given nuclide at given temperature
+  !! This function is for DBRC and is not used in TMS
+  !!
+  !! Subroutine to update the scattering temperature majorant in a given nuclide at given temperature
   !! The function finds the upper and lower limits of the energy range from which the TmajXS is found in aceNeutronNuclide.
   !! These xs for these energies are found and all inbetween, the maximum is taken and returned as TmajXS
   !!
@@ -574,14 +591,6 @@ contains
     real(defReal)                         :: TmajXS
     real(defReal)                         :: E_upper, E_lower, E_min, E_max
     real(defReal)                         :: alpha
-
-
-    ! Factor for varying the truncation factor for the maxwell boltzman distribuition
-    !alpha = 4 * sqrt( kT / A )
-
-    ! Upper and lower energy limits within the highest cross section should be found
-    !E_upper = (sqrt(E) + alpha)**2
-    !E_lower = (sqrt(E) - alpha)**2
 
     ! Same as above but simpler implementation
     alpha = 4 / (sqrt( E * A / kT ))
@@ -604,7 +613,7 @@ contains
     end if
 
     ! use function in nuclide to find largest scattering xs in range of E_upper and E_lower
-    TmajXS = self % nuclides(nucIdx) % maxXSs2(E_lower, E_upper)
+    TmajXS = self % nuclides(nucIdx) % maxXSs(E_lower, E_upper)
 
   end function updateTempMicroMajorantXS
 
@@ -635,10 +644,10 @@ contains
     associate(mat     => cache_materialCache(matIdx))
 
     ! Clean exiting XSs
-    mat % TmajXS = ZERO
+    mat % xss % total = ZERO
 
     ! add majorant energy to cache
-    mat % E_maj = E
+    mat % E_tot = E
 
     !material temperature import
     matkT = (kBoltzmann * matItem % T) / joulesPerMeV
@@ -656,7 +665,7 @@ contains
       cache_nuclideCache(nucIdx) % TmajXS = ZERO
 
       !call fatal error if material temp is lower then base nuclide temps
-      if (deltakT < -1e-6) then
+      if (deltakT < -1e-8) then
         call fatalError(Here,"Material temperature must be greater than the nuclear data temperature. Try a higher temp.")
       end if
 
@@ -685,7 +694,7 @@ contains
       ! use function in nuclide to find largest total xs in range of E_upper and E_lower and add to subtotal
       cache_nuclideCache(nucIdx) % TmajXS = self % nuclides(nucIdx) % maxXSt(E_lower, E_upper)  * corrFact
       ! sum nuclide majorants to find mat majorant
-      mat % TmajXS = mat % TmajXS + cache_nuclideCache(nucIdx) % TmajXS * dens
+      mat % xss % total = mat % xss % total  + cache_nuclideCache(nucIdx) % TmajXS * dens
 
     end do
 

@@ -260,14 +260,14 @@ contains
     if (matItem % hasTMS) then
       self % matHasTMS = .true.
 
-      if(E /= materialCache(self % matIdx) % E_maj) then
-        call self % data % updateMajorantXS(E, rand)
-      end if
+      !if(E /= materialCache(self % matIdx) % E_tot) then
+      call self % data % updateTotalMatXS(E, self % matIdx, rand)
+      !end if
+
       matkT = (kBoltzmann * matItem % T) / joulesPerMeV
+
       ! retrive mat majorant XSs from cache
-
-
-      matMajXS = materialCache(self % matIdx) % TmajXS * rand % get()
+      matMajXS = materialCache(self % matIdx) % xss % total * rand % get()
 
       do i=1,size(self % nuclides)
         nucIdx = self % nuclides(i)
@@ -280,6 +280,7 @@ contains
         matMajXS = matMajXS - nucMajXS
 
         if (matMajXS < 0) then
+          !print*, "Nuc accepted"
           nuc => ceNeutronNuclide_CptrCast(self % data % getNuclide(nucIdx))
           if(.not.associated(nuc)) call fatalError(Here, 'Failed to retive CE Neutron Nuclide')
 
@@ -317,6 +318,7 @@ contains
 
 
           ! accept or reject the sampled nuclide
+          !print*, "TMS"
           if (rand % get() < P_acc) then
             return
           else
@@ -325,8 +327,8 @@ contains
           end if
         end if
       end do
+      call fatalError(Here,'Nuclide sampling loop failed to terminate TMS')
     else
-      !print*, "Non TMS"
       ! Get total material XS
       if(E /= materialCache(self % matIdx) % E_tot) then
         call self % data % updateTotalMatXS(E, self % matIdx, rand)
@@ -343,7 +345,9 @@ contains
         xs = xs - nuclideCache(nucIdx) % xss % total * self % dens(i)
         !print*, xs
         if(xs < ZERO) return
+        !print*, "NON-TMS"
       end do
+      call fatalError(Here,'Nuclide sampling loop failed to terminate NON-TMS')
     end if
 
     ! Print error message as the inversion failed
@@ -389,16 +393,26 @@ contains
     end if
 
     ! Calculate material macroscopic nuFission
-    if(E /= materialCache(self % matIdx) % E_tail) then
-      call self % data % updateMacroXSs(E, self % matIdx, rand)
-    end if
+    !if(E /= materialCache(self % matIdx) % E_tail) then
+    !call self % data % updateMacroXSs(E, self % matIdx, rand)
+    !end if
 
-    xs = materialCache(self % matIdx) % xss % nuFission * rand % get()
+    !xs = materialCache(self % matIdx) % xss % nuFission * rand % get()
 
-    ! Loop over all nuclides
+    xs = 0
+
+    ! Loop over all nuclides to sum up xs
     do i=1,size(self % nuclides)
       nucIdx = self % nuclides(i)
       if(E /= nuclideCache(nucIdx) % E_tail) call self % data % updateMicroXSs(E, nucIdx, rand)
+      xs = xs + nuclideCache(nucIdx) % xss % nuFission * self % dens(i)
+    end do
+
+    xs = xs * rand % get()
+
+    ! Loop over all nuclides to sample nuclide
+    do i=1,size(self % nuclides)
+      nucIdx = self % nuclides(i)
       xs = xs - nuclideCache(nucIdx) % xss % nuFission * self % dens(i)
       if(xs < ZERO) return
     end do

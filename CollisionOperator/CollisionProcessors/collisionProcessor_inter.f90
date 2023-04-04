@@ -119,7 +119,7 @@ contains
 
     ! Choose collision nuclide and general type (Scatter, Capture or Fission)
     call self % sampleCollision(p, collDat, thisCycle, nextCycle)
-    if (collDat % MT == noInteraction) return
+    !if (collDat % MT == noInteraction) return
 
     ! Report in-collision & save pre-collison state
     ! Note: the ordering must not be changed between feeding the particle to the tally

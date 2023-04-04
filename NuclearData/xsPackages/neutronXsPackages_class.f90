@@ -97,23 +97,36 @@ contains
   !! Takes microscopic XSs * density and adds them to neutronMacroXSs
   !!
   !! Args:
-  !!   micro [in] -> microscopic XSs
-  !!   dens  [in] -> nuclide density in [1/barn/cm]
+  !!   micro     [in] -> microscopic XSs
+  !!   dens      [in] -> nuclide density in [1/barn/cm]
+  !!   c  [in] -> TMS low energy doppler correction factor
   !!
   !! Errors:
   !!   None
   !!
-  elemental subroutine add_neutronMacroXSs(self, micro, dens)
+  elemental subroutine add_neutronMacroXSs(self, micro, dens, c)
     class(neutronMacroXSs), intent(inout) :: self
     type(neutronMicroXSs), intent(in)     :: micro
     real(defReal), intent(in)             :: dens
+    real(defReal), intent(in), optional   :: c
 
-    self % total            = self % total            + dens * micro % total
-    self % elasticScatter   = self % elasticScatter   + dens * micro % elasticScatter
-    self % inelasticScatter = self % inelasticScatter + dens * micro % inelasticScatter
-    self % capture          = self % capture          + dens * micro % capture
-    self % fission          = self % fission          + dens * micro % fission
-    self % nuFission        = self % nuFission        + dens * micro % nuFission
+    if(present(c))then
+      self % total            = self % total            + c * dens * micro % total
+      self % elasticScatter   = self % elasticScatter   + c * dens * micro % elasticScatter
+      self % inelasticScatter = self % inelasticScatter + c * dens * micro % inelasticScatter
+      self % capture          = self % capture          + c * dens * micro % capture
+      self % fission          = self % fission          + c * dens * micro % fission
+      self % nuFission        = self % nuFission        + c * dens * micro % nuFission
+    else
+      self % total            = self % total            + dens * micro % total
+      self % elasticScatter   = self % elasticScatter   + dens * micro % elasticScatter
+      self % inelasticScatter = self % inelasticScatter + dens * micro % inelasticScatter
+      self % capture          = self % capture          + dens * micro % capture
+      self % fission          = self % fission          + dens * micro % fission
+      self % nuFission        = self % nuFission        + dens * micro % nuFission
+    endif
+
+
 
   end subroutine add_neutronMacroXSs
 

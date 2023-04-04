@@ -96,7 +96,7 @@ module materialMenu_mod
     real(defReal),dimension(:),allocatable     :: dens
     type(nuclideInfo),dimension(:),allocatable :: nuclides
     type(dictionary)                           :: extraInfo
-    logical(defBool)                           :: hasTMS = .FALSE.
+    logical(defBool)                           :: hasTMS = .false.
 
   contains
     procedure :: init    => init_materialItem
@@ -277,6 +277,7 @@ contains
       !add flag to the material to show that TMS will be used on it
       self % hasTMS = .true.
       call dict % get(self % T, 'temp')
+      print*, "material item with TMS initialised"
     else
       self % hasTMS = .false.
     end if

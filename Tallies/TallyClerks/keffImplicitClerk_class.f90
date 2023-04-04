@@ -178,13 +178,12 @@ contains
     if(.not.associated(mat)) call fatalError(Here,'Unrecognised type of material was retrived from nuclearDatabase')
     call mat % getMacroXSs(xss, p)
 
-
-    totalXS  = xss % total
+    
     nuFissXS = xss % nuFission
     absXS    = xss % capture + xss % fission
 
     ! Calculate flux and scores
-    flux = p % w / totalXS
+    flux = p % w / xsData % getTotalMatXS(p, p % matIdx())
 
     s1 = nuFissXS * flux
     s2 = absXS * flux

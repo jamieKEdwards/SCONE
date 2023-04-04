@@ -175,13 +175,12 @@ contains
     ! Select collision nuclide
     call self % mat % sampleNuclide(p % E, p % pRNG, collDat % nucIdx, rel_E)
 
-    self % count = self % count + 1
-    self % frac = ((self % rejCount) / (self % count))
+    !self % count = self % count + 1
+    !self % frac = ((self % rejCount) / (self % count))
 
     if ((self % mat % matHasTMS) .and. (collDat % nucIdx == -2)) then
       collDat % MT = noInteraction
-      self % rejCount = self % rejCount + 1
-
+      !self % rejCount = self % rejCount + 1
       !print*, "rejection stats"
       !print*, self % rejCount
       !print*, self % count
@@ -195,13 +194,14 @@ contains
 
     ! If TMS, change neutron energy to rest frame for remainder of collision
     if (self % mat % matHasTMS) then
-      p % E = rel_E
+      call self % nuc % getMicroXSs(microXss, rel_E, p % pRNG)
+      r = p % pRNG % get()
+      collDat % MT = microXss % invert(r)
+    else
+      call self % nuc % getMicroXSs(microXss, p % E, p % pRNG)
+      r = p % pRNG % get()
+      collDat % MT = microXss % invert(r)
     end if
-
-    ! Select Main reaction channel
-    call self % nuc % getMicroXSs(microXss, p % E, p % pRNG)
-    r = p % pRNG % get()
-    collDat % MT = microXss % invert(r)
 
   end subroutine sampleCollision
 
@@ -300,40 +300,51 @@ contains
   end subroutine fission
 
   !!
-  !! Process elastic scattering
-  !!
-  !! All CE elastic scattering happens in the CM frame
-  !!
-  subroutine elastic(self, p, collDat, thisCycle, nextCycle)
-    class(neutronCEstd), intent(inout)   :: self
-    class(particle), intent(inout)       :: p
-    type(collisionData), intent(inout)   :: collDat
-    class(particleDungeon),intent(inout) :: thisCycle
-    class(particleDungeon),intent(inout) :: nextCycle
-    class(uncorrelatedReactionCE), pointer :: reac
-    logical(defBool)                       :: isFixed
-    character(100),parameter :: Here = 'elastic (neutronCEstd_class.f90)'
+!! Process elastic scattering
+!!
+!! All CE elastic scattering happens in the CM frame
+!!
+subroutine elastic(self, p, collDat, thisCycle, nextCycle)
+  class(neutronCEstd), intent(inout)    :: self
+  class(particle), intent(inout)        :: p
+  type(collisionData), intent(inout)    :: collDat
+  class(particleDungeon),intent(inout)  :: thisCycle
+  class(particleDungeon),intent(inout)  :: nextCycle
+  class(uncorrelatedReactionCE), pointer :: reac
+  logical(defBool)                       :: isFixed, nucDBRC
+  integer(shortInt)                          :: nucIdx
+  character(100),parameter :: Here = 'elastic (neutronCEstd_class.f90)'
 
-    ! Get reaction
-    reac => uncorrelatedReactionCE_CptrCast( self % xsData % getReaction(collDat % MT, collDat % nucIdx))
-    if(.not.associated(reac)) call fatalError(Here,'Failed to get elastic neutron scatter')
+  ! Get reaction
+  reac => uncorrelatedReactionCE_CptrCast( self % xsData % getReaction(collDat % MT, collDat % nucIdx))
+  if(.not.associated(reac)) call fatalError(Here,'Failed to get elastic neutron scatter')
 
-    ! Scatter particle
-    collDat % A =  self % nuc % getMass()
-    collDat % kT = self % nuc % getkT()
+  ! Scatter particle
+  collDat % A =  self % nuc % getMass()
+  collDat % kT = self % nuc % getkT()
+  nucIdx = collDat % nucIdx
 
-    isFixed = (p % E > collDat % kT * self % tresh_E) .and. (collDat % A > self % tresh_A)
+  !cast pointer to aceNeutronNuclide
+  self % aceNuc => aceNeutronNuclide_CptrCast(self % xsData % getNuclide(collDat % nucIdx))
+  if(.not.associated(self % aceNuc)) call fatalError(Here, 'Failed to retive ACE Neutron Nuclide')
 
-    ! Apply criterion for Free-Gas vs Fixed Target scattering
-    if (.not. reac % inCMFrame()) then
-      call self % scatterInLAB(p, collDat, reac)
-    elseif (isFixed) then
-      call self % scatterFromFixed(p, collDat, reac)
-    else
-      call self % scatterFromMoving(p, collDat, reac)
-    end if
+  !cast pointer to aceNeutronDatabase
+  self % aceData => aceNeutronDatabase_CptrCast(self % xsData)
+  if(.not.associated(self % aceData)) call fatalError(Here, 'Failed to retive ACE Neutron Database')
 
-  end subroutine elastic
+  isFixed = (p % E > collDat % kT * self % tresh_E) .and. (collDat % A > self % tresh_A)
+  nucDBRC = ( self % aceNuc % isNucDBRC .and. self % aceData % hasDBRC)
+
+  ! Apply criterion for Free-Gas vs Fixed Target scattering
+  if (.not. reac % inCMFrame()) then
+    call self % scatterInLAB(p, collDat, reac)
+  elseif (isFixed .and. .not. nucDBRC) then
+    call self % scatterFromFixed(p, collDat, reac)
+  else
+    call self % scatterFromMoving(p, collDat, reac)
+  end if
+
+end subroutine elastic
 
   !!
   !! Process inelastic scattering

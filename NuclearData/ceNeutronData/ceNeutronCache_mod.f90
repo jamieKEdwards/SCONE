@@ -35,15 +35,13 @@ module ceNeutronCache_mod
   !!   f      -> Interpolation factor for the nuclide at energy E_tot
   !!   idx    -> Index on a nuclide grid for energy E_tot
   !!   xss    -> Cached Cross-Section values
-  !!   TmajXS -> Temperature majorant nuclide XS
+  !!   TmajXS -> Temperature majorant material XS (sum across nuclides total TmajXS)
   !!
   type, public :: cacheMatDat
     real(defReal)         :: E_tot  = ZERO
     real(defReal)         :: E_tail = ZERO
     real(defReal)         :: E_uni  = ZERO
-    real(defReal)         :: E_maj  = ZERO
     real(defReal)         :: f      = ZERO
-    real(defReal)         :: TmajXS = ZERO
     integer(shortInt)     :: idx    = 0
     type(neutronMacroXSs) :: xss
   end type cacheMatDat
@@ -59,7 +57,7 @@ module ceNeutronCache_mod
   !!   f      -> Interpolation factor for the nuclide at energy E_tot
   !!   idx    -> Index on a nuclide grid for energy E_tot
   !!   xss    -> Cached Cross-Sections values
-  !!   TmajXS -> Temperature majorant nuclide XS
+  !!   TmajXS -> Temperature majorant nuclide XS (totalXS)
   !!
   type, public :: cacheNucDat
     real(defReal)         :: E_tot  = ZERO

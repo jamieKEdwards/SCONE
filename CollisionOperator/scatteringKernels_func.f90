@@ -188,7 +188,6 @@ contains
     alpha = 2.0 / (Y * sqrt(PI) + 2.0)
 
     rejectionLoop: do
-      !print*, "Rejected"
       ! Obtain random numbers
       r1 = rand % get()
       r2 = rand % get()
@@ -198,10 +197,8 @@ contains
       ! Sample X = beta * V_t
       if ( r1 > alpha ) then
         X = sample_x2expx2(rand)
-
       else
         X = sample_x3expx2(rand)
-
       end if
 
       ! Sample polar angle of target velocity wrt. neutron direction
