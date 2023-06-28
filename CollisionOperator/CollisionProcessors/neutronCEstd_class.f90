@@ -177,33 +177,25 @@ contains
     ! Select collision nuclide
     call self % mat % sampleNuclide(p % E, p % pRNG, collDat % nucIdx, rel_E)
 
-    !self % count = self % count + 1
-    !self % frac = ((self % rejCount) / (self % count))
-
+    ! If nuclide of index -2 is returned then TMS collision site and nuclide is rejected
     if ((self % mat % matHasTMS) .and. (collDat % nucIdx == -2)) then
       collDat % MT = noInteraction
-      !self % rejCount = self % rejCount + 1
-      !print*, "rejection stats"
-      !print*, self % rejCount
-      !print*, self % count
-      !print*, self % frac
       return
     end if
-
 
     self % nuc => ceNeutronNuclide_CptrCast(self % xsData % getNuclide(collDat % nucIdx))
     if(.not.associated(self % mat)) call fatalError(Here, 'Failed to retrieve CE Neutron Nuclide')
 
-    ! If TMS, change neutron energy to rest frame for remainder of collision
+    ! Find relative energy micro cross sections for sampling reaction
     if (self % mat % matHasTMS) then
       call self % nuc % getMicroXSs(microXss, rel_E, p % pRNG)
-      r = p % pRNG % get()
-      collDat % MT = microXss % invert(r)
     else
       call self % nuc % getMicroXSs(microXss, p % E, p % pRNG)
-      r = p % pRNG % get()
-      collDat % MT = microXss % invert(r)
     end if
+
+    ! Sample reaction
+    r = p % pRNG % get()
+    collDat % MT = microXss % invert(r)
 
   end subroutine sampleCollision
 
@@ -238,7 +230,7 @@ contains
 
       matItem => mm_getMatPtr(p % matIdx())
 
-      !! if material uses TMS then relative energy is needed to be sampled for
+      !! If material uses TMS then relative energy needs to be sampled for
       !! the cross section look ups which determine fission sites.
       !!
       !! Althought the information below is to find `broadened' cross sections for TMS, the dopplerCorrectionFactor
@@ -246,15 +238,14 @@ contains
       !!
       if (matItem % hasTMS) then
 
+        ! Bring through material and nuclide information
         matkT = (kBoltzmann * matItem % T) / joulesPerMeV
-        ! Do stuff to find TMS details kT ect
-        ! bring throug material and nuclide information
         kT = self % nuc % getkT()
         A = self % nuc % getMass()
         deltakT = matkT - kT
         rel_E = targetVelocity_relE(p % E, A, deltakT, p % pRNG)
 
-        ! avoid sampled relative energy from MB dist extending into energies outside system range
+        ! Avoid sampled relative energy from MB dist extending into energies outside system range
         if (rel_E < self % minE) then
           rel_E = self % minE
         end if
@@ -263,7 +254,7 @@ contains
           rel_E = self % maxE
         end if
 
-        ! then look up cross sections with relative E
+        ! Look up cross sections with relative E
         call self % nuc % getMicroXSs(microXSs, rel_E, p % pRNG)
       else
         call self % nuc % getMicroXSs(microXSs, p % E, p % pRNG)
@@ -350,7 +341,6 @@ subroutine elastic(self, p, collDat, thisCycle, nextCycle)
   class(uncorrelatedReactionCE), pointer  :: reac
   type(materialItem), pointer             :: matItem
   logical(defBool)                        :: isFixed, nucDBRC
-  integer(shortInt)                       :: nucIdx
   real(defReal)                           :: matkT
   character(100),parameter :: Here = 'elastic (neutronCEstd_class.f90)'
 
@@ -358,19 +348,23 @@ subroutine elastic(self, p, collDat, thisCycle, nextCycle)
   reac => uncorrelatedReactionCE_CptrCast( self % xsData % getReaction(collDat % MT, collDat % nucIdx))
   if(.not.associated(reac)) call fatalError(Here,'Failed to get elastic neutron scatter')
 
+  ! Get collision data
+  collDat % A =  self % nuc % getMass()
 
+  ! Bring through material information
   matItem => mm_getMatPtr(p % matIdx())
+
+  ! Check for TMS
   if (matItem % hasTMS) then
+
+    ! Set collision temp as material TMS temp in MeV
     matkT = (kBoltzmann * matItem % T) / joulesPerMeV
     collDat % kT = matkT
+
+  ! Otherwise use nuc temp
   else
     collDat % kT = self % nuc % getkT()
   end if
-
-  ! Scatter particle
-  collDat % A =  self % nuc % getMass()
-
-  nucIdx = collDat % nucIdx
 
   !cast pointer to aceNeutronNuclide
   self % aceNuc => aceNeutronNuclide_CptrCast(self % xsData % getNuclide(collDat % nucIdx))
@@ -419,7 +413,7 @@ end subroutine elastic
       call self % scatterInLAB(p, collDat, reac)
     end if
 
-    ! Apply weigth change
+    ! Apply weight change
     p % w = p % w * reac % release(p % E)
 
   end subroutine inelastic
@@ -516,7 +510,7 @@ end subroutine elastic
     real(defReal)                              :: TmajXS
     logical(defBool)                           :: eRange, nucDBRC
     character(100), parameter :: Here = 'Scatter From Moving (neutronCEstd_class.f90)'
-    !class(aceNeutronNuclide), pointer, public  :: aceNuc => null()
+
     nucIdx = 0
 
     ! Read data

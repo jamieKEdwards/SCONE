@@ -102,7 +102,6 @@ module aceNeutronDatabase_class
     procedure :: updateMicroXSs
 
     !aceNeutronDatabase Procedres
-    procedure :: getRelEMicroXS
     procedure :: updateTempMicroMajorantXS
     procedure :: updateTempMacroMajorantXS
 
@@ -188,58 +187,6 @@ contains
 
   end function getNuclide
 
-  !!
-  !! Returns total micro cross section given thermal motion of target
-  !!
-  !! #####--------THIS IS NOT CALLED ANYWHERE AT THE MOMENT! ----------#####
-  !!
-  !!
-  !!
-  function getRelEMicroXS(self, E, nucIdx, matkT, rand) result(relEMicroXS)
-    class(aceNeutronDatabase), intent(in) :: self
-    real(defReal), intent(in)             :: E
-    real(defReal), intent(in)             :: matkT
-    integer(shortInt), intent(in)         :: nucIdx
-    class(RNG), intent(inout)             :: rand
-    real(defReal)                         :: E_min, E_max, rel_E
-    real(defReal)                         :: relEMicroXS, A, kT, deltakT
-    character(100), parameter :: Here = 'getRelEMicroXS (aceNeutronDatabase_class.f90)'
-
-    associate (nucCache => cache_nuclideCache(nucIdx), &
-               nuc      => self % nuclides(nucIdx)     )
-
-      ! find nuclide rel_e total macro XS for rejection
-      A = self % nuclides(nucIdx) % getMass()
-      kT = self % nuclides(nucIdx) % getkT()
-      deltakT = matkT - kT
-
-      !call fatal error if material temp is lower then base nuclide temps
-      !if (deltakT < ZERO) then
-      !  call fatalError(Here,"Material temperature must be greater than the nuclear data temperature. Try a higher temp.")
-      !end if
-
-      ! sample relative energy
-      rel_E = targetVelocity_relE(E, A, deltakT, rand)
-
-      call self % energyBounds(E_min, E_max)
-      ! Call through system minimum and maximum energies
-
-      ! avoid sampled relative energy from MB dist extending into energies outside system range
-      if (rel_E < E_min) then
-        rel_E = E_min
-      end if
-
-      if (E_max < rel_E) then
-        rel_E = E_max
-      end if
-
-      ! search for cross section at sampled energy
-      call nuc % search(nucCache % idx, nucCache % f, E)
-      relEMicroXS = nuc % totalXS(nucCache % idx, nucCache % f)
-
-    end associate
-
-  end function getRelEMicroXS
 
 
 
@@ -319,8 +266,7 @@ contains
     class(RNG), intent(inout)             :: rand
     type(materialItem), pointer           :: matItem
     integer(shortInt)                     :: i, nucIdx
-    real(defReal)                         :: dens, A, nuckT, matkT, deltakT
-    real(defReal)                         :: E_min, E_max, rel_E, corrFact
+    real(defReal)                         :: dens
     character(100), parameter :: Here = 'updateTotalMatXS (aceNeutronDatabase_class.f90)'
 
     associate ( mat => cache_materialCache(matIdx))
@@ -332,8 +278,6 @@ contains
 
       ! Clean current total XS
       mat % xss % total = ZERO
-
-
 
       if (matItem % hasTMS) then
         call updateTempMacroMajorantXS(self, E, matIdx)
@@ -384,7 +328,6 @@ contains
         matIdx = self % activeMat(i)
 
         matItem => mm_getMatPtr(matIdx)
-
 
         if( cache_materialCache(matIdx) % E_tot /= E) then
           call self % updateTotalMatXS(E, matIdx, rand)
@@ -449,22 +392,16 @@ contains
           call self % energyBounds(E_min, E_max)
 
           ! avoid sampled relative energy from MB dist extending into energies outside system range
-          if (rel_E < E_min) then
-            rel_E = E_min
-          end if
-
-          if (E_max < rel_E) then
-            rel_E = E_max
-          end if
+          if (rel_E < E_min) rel_E = E_min
+          if (E_max < rel_E) rel_E = E_max
 
           ! G factor correction for low energies
           corrFact = dopplerCorrectionFactor(E, A, deltakT)
 
           ! Update if needed
-          !if(cache_nuclideCache(nucIdx) % E_tail /= E) then
-          !print*, "updating microXSs with rel_E"
-          call self % updateMicroXSs(rel_E, nucIdx, rand)
-          !end if
+          if(cache_nuclideCache(nucIdx) % E_tail /= E) then
+            call self % updateMicroXSs(rel_E, nucIdx, rand)
+          end if
 
           ! Add microscopic XSs
           call mat % xss % add(cache_nuclideCache(nucIdx) % xss, dens, corrFact)
@@ -592,8 +529,8 @@ contains
     real(defReal)                         :: E_upper, E_lower, E_min, E_max
     real(defReal)                         :: alpha
 
-    ! Same as above but simpler implementation
-    alpha = 4 / (sqrt( E * A / kT ))
+    ! Truncation width of MB dist. Change the first number to vary the width multiple.
+    alpha = 3 / (sqrt( E * A / kT ))
 
     ! Upper and lower energy limits within the highest cross section should be found
     E_upper = E * (1 + alpha) * (1 + alpha)
@@ -603,14 +540,9 @@ contains
     ! Call through system minimum and maximum energies
     call self % energyBounds(E_min, E_max)
 
-    ! avoid MB dist extending into energies outside system range
-    if (E_lower < E_min) then
-      E_lower = E_min
-    end if
-
-    if (E_max < E_lower) then
-      E_upper = E_max
-    end if
+    ! Avoid MB dist extending into energies outside system range
+    if (E_lower < E_min) E_lower = E_min
+    if (E_max < E_lower) E_upper = E_max
 
     ! use function in nuclide to find largest scattering xs in range of E_upper and E_lower
     TmajXS = self % nuclides(nucIdx) % maxXSs(E_lower, E_upper)
@@ -669,24 +601,19 @@ contains
         call fatalError(Here,"Material temperature must be greater than the nuclear data temperature. Try a higher temp.")
       end if
 
-      ! Factor for varying the truncation factor for the maxwell boltzman distribuition
-      alpha = 4 * sqrt(deltakT / A)
+      ! Truncation width of MB dist. Change the first number to vary the width multiple.
+      alpha = 3 / (sqrt( E * A / kT ))
 
       ! Upper and lower energy limits within the highest cross section should be found
-      E_upper = (sqrt(E) + alpha)**2
-      E_lower = (sqrt(E) - alpha)**2
+      E_upper = E * (1 + alpha) * (1 + alpha)
+      E_lower = E * (1 - alpha) * (1 - alpha)
 
       ! Call through system minimum and maximum energies
       call self % energyBounds(E_min, E_max)
 
-      ! avoid MB dist extending into energies outside system range
-      if (E_lower < E_min) then
-        E_lower = E_min
-      end if
-
-      if (E_max < E_upper) then
-        E_upper = E_max
-      end if
+      ! Avoid MB dist extending into energies outside system range
+      if (E_lower < E_min) E_lower = E_min
+      if (E_max < E_lower) E_upper = E_max
 
       ! G factor correction for low energies
       corrFact = dopplerCorrectionFactor(E, A, deltakT)

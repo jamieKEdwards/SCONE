@@ -280,7 +280,8 @@ contains
         matMajXS = matMajXS - nucMajXS
 
         if (matMajXS < 0) then
-          !print*, "Nuc accepted"
+
+          ! Nuc accepted
           nuc => ceNeutronNuclide_CptrCast(self % data % getNuclide(nucIdx))
           if(.not.associated(nuc)) call fatalError(Here, 'Failed to retive CE Neutron Nuclide')
 
@@ -289,36 +290,21 @@ contains
           deltakT = matkT - kT
 
           rel_E = targetVelocity_relE(E, A, deltakT, rand)
-          !print*, 'E incoming = ', E, '      E rel = ', rel_E
-          call self % data % energyBounds(E_min, E_max)
+
           ! Call through system minimum and maximum energies
+          call self % data % energyBounds(E_min, E_max)
 
           ! avoid sampled relative energy from MB dist extending into energies outside system range
-          if (rel_E < E_min) then
-            rel_E = E_min
-          end if
-
-          if (E_max < rel_E) then
-            rel_E = E_max
-          end if
+          if (rel_E < E_min) rel_E = E_min
+          if (E_max < rel_E) rel_E = E_max
 
           ! get relative energy cross section
           call self % data % updateMicroXSs(rel_E, nucIdx, rand)
 
-
-
           ! sample nuclide using ratio of rel E xs to nuc majorant
           P_acc = nuclideCache(nucIdx) % xss % total * dens * dopplerCorrectionFactor(E, A, deltakT) / nucMajXS
-          !print*, "nucIdx" , nucIdx
-          !print*, "e and rel e", E, rel_E
-          !print*, nuclideCache(nucIdx) % xss % total
-          !print*, nucMajXS / dens
-          !print*, P_acc
-          !print*, "SAMPLING"
-
 
           ! accept or reject the sampled nuclide
-          !print*, "TMS"
           if (rand % get() < P_acc) then
             return
           else
@@ -328,14 +314,17 @@ contains
         end if
       end do
       call fatalError(Here,'Nuclide sampling loop failed to terminate TMS')
+
     else
+    ! For materials without TMS:
+
       ! Get total material XS
       if(E /= materialCache(self % matIdx) % E_tot) then
         call self % data % updateTotalMatXS(E, self % matIdx, rand)
       end if
 
       xs = materialCache(self % matIdx) % xss % total * rand % get()
-      !print*, xs
+
       ! Loop over all nuclides
       do i=1,size(self % nuclides)
         nucIdx = self % nuclides(i)
@@ -343,9 +332,9 @@ contains
           call self % data % updateTotalNucXS(E, nucIdx, rand)
         end if
         xs = xs - nuclideCache(nucIdx) % xss % total * self % dens(i)
-        !print*, xs
+
         if(xs < ZERO) return
-        !print*, "NON-TMS"
+
       end do
       call fatalError(Here,'Nuclide sampling loop failed to terminate NON-TMS')
     end if

@@ -42,6 +42,8 @@ module ceNeutronCache_mod
     real(defReal)         :: E_tail = ZERO
     real(defReal)         :: E_uni  = ZERO
     real(defReal)         :: f      = ZERO
+    real(defReal)         :: E_maj  = ZERO
+    real(defReal)         :: TmajXS = ZERO
     integer(shortInt)     :: idx    = 0
     type(neutronMacroXSs) :: xss
   end type cacheMatDat

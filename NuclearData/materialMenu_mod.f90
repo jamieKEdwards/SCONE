@@ -277,7 +277,6 @@ contains
       !add flag to the material to show that TMS will be used on it
       self % hasTMS = .true.
       call dict % get(self % T, 'temp')
-      print*, "material item with TMS initialised"
     else
       self % hasTMS = .false.
     end if

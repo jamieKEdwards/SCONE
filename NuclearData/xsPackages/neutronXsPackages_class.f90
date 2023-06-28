@@ -99,7 +99,7 @@ contains
   !! Args:
   !!   micro     [in] -> microscopic XSs
   !!   dens      [in] -> nuclide density in [1/barn/cm]
-  !!   c  [in] -> TMS low energy doppler correction factor
+  !!   c         [in] -> TMS low energy doppler correction factor
   !!
   !! Errors:
   !!   None

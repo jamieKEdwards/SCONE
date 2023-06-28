@@ -423,17 +423,15 @@ contains
     real(defReal), intent(in)             :: lowerE
     real(defReal), intent(in)             :: upperE
     real(defReal)                         :: maxXS
-    type(neutronMicroXSs)                 :: xss
-    integer(shortInt)                     :: loweridx, idx, i
+    integer(shortInt)                     :: idx, i
     real(defReal)                         :: lowerXS, f, e, xs
 
 
     ! Search for idx, f, and xs for the lower energy limit
     call self % search(idx, f, lowerE)
-
     lowerXS = scatterXS(self, idx, f)
 
-    ! initially set interpolated lower bound as maximum xs
+    ! Initially set interpolated lower bound as maximum xs
     maxXS = lowerXS
 
     ! Start loop at next index after lower energy bound
@@ -441,26 +439,27 @@ contains
 
     maxXSLoop: do
 
-    !  find XS and energy at index
+    !  Find XS and energy at index
       xs = self % mainData(ESCATTER_XS, i)
       e = self % eGrid(i)
 
-      ! when e below upper bound accept or reject new maxXS
+      ! When e below upper bound accept or reject new maxXS
       if (e < upperE) then
 
         if (maxXS < xs) then
           maxXS = xs
         end if
 
-      ! otherwise check if xs at next index is larger than exisitng max
+      ! Otherwise check if xs at next index is larger than exisitng max
       else if (e==upperE) then
-        ! check if xs of last index is larger
+        ! Check if xs of last index is larger
         if (maxXS < xs) then
           maxXS = xs
         end if
 
-        ! as last energy index, end loop here
+        ! As last energy index, end loop here
         exit maxXSLoop
+
       else
         if (xs > maxXS) then
 
@@ -483,7 +482,6 @@ contains
           exit maxXSLoop
 
         end if
-
       end if
 
       ! increase counter
@@ -523,7 +521,7 @@ contains
 
     maxXSLoop: do
 
-    !  find XS and energy at index
+      ! Find XS and energy at index
       xs = self % mainData(TOTAL_XS, i)
       e = self % eGrid(i)
 

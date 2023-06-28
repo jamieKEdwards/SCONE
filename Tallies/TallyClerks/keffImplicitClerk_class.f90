@@ -156,7 +156,7 @@ contains
     type(scoreMemory), intent(inout)         :: mem
     type(neutronMacroXSs)                    :: xss
     class(neutronMaterial), pointer          :: mat
-    real(defReal)                            :: totalXS, nuFissXS, absXS, flux
+    real(defReal)                            :: nuFissXS, absXS, flux
     real(defReal)                            :: s1, s2
     character(100), parameter  :: Here = 'reportInColl (keffImplicitClerk_class.f90)'
 
@@ -178,7 +178,6 @@ contains
     if(.not.associated(mat)) call fatalError(Here,'Unrecognised type of material was retrived from nuclearDatabase')
     call mat % getMacroXSs(xss, p)
 
-    
     nuFissXS = xss % nuFission
     absXS    = xss % capture + xss % fission
 
