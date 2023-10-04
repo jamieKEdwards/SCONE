@@ -71,6 +71,7 @@ contains
         call fatalError(Here, "Particle is in undefined material")
       end if
 
+
       ! Obtain the local cross-section
       sigmaT = self % xsData % getTransMatXS(p, p % matIdx())
 

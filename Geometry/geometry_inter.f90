@@ -361,6 +361,7 @@ contains
         point(plane(1)) = corner(plane(1)) + step(plane(1)) * i
 
         ! Find material and paint image
+
         call self % whatIsAt(matIdx, uniqueID, point)
 
         ! Paint the pixel

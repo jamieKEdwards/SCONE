@@ -340,7 +340,7 @@ contains
   !! Result:
   !!   True if position is in +ve halfspace. False if it is in -ve
   !!
-  pure function halfspace(self, r, u) result(hs)
+  function halfspace(self, r, u) result(hs)
     class(surface), intent(in)              :: self
     real(defReal), dimension(3), intent(in) :: r
     real(defReal), dimension(3), intent(in) :: u

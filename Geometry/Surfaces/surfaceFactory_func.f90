@@ -1,11 +1,11 @@
 module surfaceFactory_func
 
   use numPrecision
-  use genericProcedures, only : fatalError
-  use dictionary_class,  only : dictionary
+  use genericProcedures,    only : fatalError
+  use dictionary_class,     only : dictionary
 
   ! Surface interface
-  use surface_inter,     only : surface
+  use surface_inter,        only : surface
 
   ! Surfaces
   use aPlane_class,         only : aPlane
@@ -15,6 +15,7 @@ module surfaceFactory_func
   use box_class,            only : box
   use squareCylinder_class, only : squareCylinder
   use truncCylinder_class,  only : truncCylinder
+  use bezierShape_class,    only : bezierShape
 
   implicit none
   private
@@ -36,7 +37,8 @@ module surfaceFactory_func
                                                                       'zSquareCylinder',&
                                                                       'xTruncCylinder ',&
                                                                       'yTruncCylinder ',&
-                                                                      'zTruncCylinder ' ]
+                                                                      'zTruncCylinder ',&
+                                                                      'bezierShape    ']
 
   ! Public interface
   public :: new_surface_ptr
@@ -89,6 +91,9 @@ contains
 
       case ('xTruncCylinder', 'yTruncCylinder', 'zTruncCylinder')
         allocate (truncCylinder :: new)
+
+      case ('bezierShape')
+        allocate (bezierShape :: new)
 
       case default
         print '(A)' , ' AVAILABLE SURFACES: '

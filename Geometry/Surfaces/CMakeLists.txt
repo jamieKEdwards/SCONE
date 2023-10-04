@@ -9,6 +9,7 @@ add_sources(./surface_inter.f90
             ./truncCylinder_class.f90
             ./surfaceFactory_func.f90
             ./surfaceShelf_class.f90
+            ./bezierShape_class.f90
            )
 
 add_unit_tests( ./Tests/sphere_test.f90
