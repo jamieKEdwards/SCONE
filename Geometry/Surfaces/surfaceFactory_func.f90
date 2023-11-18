@@ -16,6 +16,8 @@ module surfaceFactory_func
   use squareCylinder_class, only : squareCylinder
   use truncCylinder_class,  only : truncCylinder
   use bezierShape_class,    only : bezierShape
+  use bezierVolume_class,   only : bezierVolume
+  use bezierTwist_class,    only : bezierTwist
 
   implicit none
   private
@@ -38,7 +40,9 @@ module surfaceFactory_func
                                                                       'xTruncCylinder ',&
                                                                       'yTruncCylinder ',&
                                                                       'zTruncCylinder ',&
-                                                                      'bezierShape    ']
+                                                                      'bezierShape    ',&
+                                                                      'bezierTwist    ',&
+                                                                      'bezierVolume   ']
 
   ! Public interface
   public :: new_surface_ptr
@@ -94,6 +98,12 @@ contains
 
       case ('bezierShape')
         allocate (bezierShape :: new)
+
+      case ('bezierTwist')
+        allocate (bezierTwist :: new)
+
+      case ('bezierVolume')
+        allocate (bezierVolume :: new)
 
       case default
         print '(A)' , ' AVAILABLE SURFACES: '
