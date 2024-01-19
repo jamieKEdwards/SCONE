@@ -1,7 +1,7 @@
 type eigenPhysicsPackage;
 
-pop      200000;
-//pop 20000;
+//pop      200000;
+pop 20000;
 active   500;
 inactive 300;
 XSdata   ce;
@@ -38,7 +38,7 @@ activeTally  {
                         }
                         response (flux); flux {type fluxResponse;}
                       }
-	      }
+        }
 
 geometry {
     type geometryStd;
@@ -69,7 +69,7 @@ geometry {
 nuclearData {
 
   handles {
-     ce { type aceNeutronDatabase; aceLibrary /home/jamie/data/myACE/JEF311.aceXS;}
+     ce { type aceNeutronDatabase; aceLibrary $SCONE_ACE;}
   }
 
 
@@ -98,3 +98,6 @@ materials {
 }
 
 }
+
+
+

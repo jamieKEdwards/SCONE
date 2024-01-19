@@ -78,4 +78,8 @@ module universalVariables
   ! Unit conversion
   real(defReal), parameter :: joulesPerMeV = 1.60218e-13     ! Convert MeV to J
 
+  ! Global name variables used to define specific geometry or field types
+  character(nameLen), parameter :: nameUFS = 'uniFissSites'
+  character(nameLen), parameter :: nameWW  = 'WeightWindows'  
+
 end module universalVariables
