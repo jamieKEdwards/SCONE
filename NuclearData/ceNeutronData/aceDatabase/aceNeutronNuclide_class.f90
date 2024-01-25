@@ -120,6 +120,7 @@ module aceNeutronNuclide_class
     ! Superclass Interface
     procedure :: invertInelastic
     procedure :: xsOf
+    procedure :: elScatteringXS
     procedure :: kill
 
     ! Local interface
@@ -128,11 +129,13 @@ module aceNeutronNuclide_class
     procedure :: scatterXS
     procedure :: microXSs
     procedure :: getUrrXSs
+    procedure :: getThXSs
+    procedure :: elScatteringTMaj
     procedure :: init
     procedure :: init_urr
+    procedure :: init_Sab
     procedure :: display
-    procedure :: maxXSs
-    procedure :: maxXSt
+    procedure :: totNucTMaj
 
   end type aceNeutronNuclide
 
@@ -357,7 +360,7 @@ contains
   !!   Invalid idx beyond array bounds -> undefined behaviour
   !!   Invalid f (outside [0;1]) -> incorrect value of XS
   !!
-  elemental function scatterXS(self, idx, f) result(xs)
+  elemental function elScatteringXS(self, idx, f) result(xs)
     class(aceNeutronNuclide), intent(in) :: self
     integer(shortInt), intent(in)        :: idx
     real(defReal), intent(in)            :: f
@@ -365,7 +368,7 @@ contains
 
     xs = self % mainData(ESCATTER_XS, idx+1) * f + (ONE-f) * self % mainData(ESCATTER_XS, idx)
 
-  end function scatterXS
+  end function elScatteringXS
 
 
 
@@ -410,168 +413,96 @@ contains
 
 
 
-  !! Function to calculate the maximum scattering cross section within an energy range given by an upper and lower energy bound.
+!! Function to calculate the maximum elastic scattering cross section within
+  !! an energy range given by an upper and lower energy bound.
   !!
+  !! Args:
+  !!   upperE [in]  -> Upper bound of energy range
+  !!   upperE [in]  -> Upper bound of energy range
+  !!   maj [out]    -> Maximum scattering cross section within energy range
   !!
-  !!Args:
-  !!   upperE [in]    -> Upper bound of energy range
-  !!   upperE [in]    -> Upper bound of energy range
-  !!   maxXS [out]    -> Maximum scattering cross section within energy range
-  !!
-  function maxXSs(self, lowerE, upperE) result (maxXS)
+  function elScatteringTMaj(self, lowerE, upperE) result (maj)
     class(aceNeutronNuclide), intent(in)  :: self
     real(defReal), intent(in)             :: lowerE
     real(defReal), intent(in)             :: upperE
-    real(defReal)                         :: maxXS
-    integer(shortInt)                     :: idx, i
-    real(defReal)                         :: lowerXS, f, e, xs
-
+    real(defReal)                         :: maj
+    integer(shortInt)                     :: idx
+    real(defReal)                         :: f, E, xs
 
     ! Search for idx, f, and xs for the lower energy limit
     call self % search(idx, f, lowerE)
-    lowerXS = scatterXS(self, idx, f)
 
-    ! Initially set interpolated lower bound as maximum xs
-    maxXS = lowerXS
+    ! Conservative: choose the xs at the energy point before the lower energy limit
+    f = 0
+    maj = self % scatterXS(idx, f)
 
-    ! Start loop at next index after lower energy bound
-    i = idx + 1
+    majorantLoop: do
 
-    maxXSLoop: do
+      ! Increase index
+      idx = idx + 1
 
-    !  Find XS and energy at index
-      xs = self % mainData(ESCATTER_XS, i)
-      e = self % eGrid(i)
+      ! Find XS and energy at index
+      xs = self % mainData(ESCATTER_XS, idx)
+      E = self % eGrid(idx)
 
-      ! When e below upper bound accept or reject new maxXS
-      if (e < upperE) then
-
-        if (maxXS < xs) then
-          maxXS = xs
-        end if
-
-      ! Otherwise check if xs at next index is larger than exisitng max
-      else if (e==upperE) then
-        ! Check if xs of last index is larger
-        if (maxXS < xs) then
-          maxXS = xs
-        end if
-
-        ! As last energy index, end loop here
-        exit maxXSLoop
-
-      else
-        if (xs > maxXS) then
-
-          ! do Interpolation and return xs
-          f = (upperE - self % eGrid(i-1)) / (self % eGrid(i) - self % eGrid(i-1))
-          xs = self % mainData(ESCATTER_XS, i) * f + (ONE-f) * self % mainData(ESCATTER_XS, i-1)
-
-          ! Check if new interpolated xs is larger than exisitng maximum, if yes then reassign
-          if (xs > maxXS) then
-            maxXS = xs
-          end if
-
-          ! end of loop is reached and loop exited
-          exit maxXSLoop
-
-        ! if xs at the next index after energy range is not greater than existing max then exit loop
-        else
-
-          ! end of loop is reached and loop exited
-          exit maxXSLoop
-
-        end if
+      ! Compare cross sections and possibly update majorant
+      if (xs > maj) then
+        maj = xs
       end if
 
-      ! increase counter
-      i = i + 1
+      ! Exit loop after getting to the upper energy limit
+      if (E > upperE) exit majorantLoop
 
-    end do maxXSLoop
+    end do majorantLoop
 
-  end function maxXSs
+  end function elScatteringTMaj
+
 
 
   !! Function to calculate the maximum total cross section within an energy range given by an upper and lower energy bound.
   !!
+  !! This function is used to find total nuclide wise temperature majorants which are used in finding the material wise temperature majorant
   !!
   !!Args:
   !!   upperE [in]    -> Upper bound of energy range
   !!   upperE [in]    -> Upper bound of energy range
   !!   maxXS [out]    -> Maximum total cross section within energy range
   !!
-  function maxXSt(self, lowerE, upperE) result (maxXS)
+  function totNucTMaj(self, lowerE, upperE) result (maj)
     class(aceNeutronNuclide), intent(in)  :: self
     real(defReal), intent(in)             :: lowerE
     real(defReal), intent(in)             :: upperE
-    real(defReal)                         :: maxXS
-    integer(shortInt)                     :: idx, i
-    real(defReal)                         :: lowerXS, f, e, xs
+    real(defReal)                         :: maj
+    integer(shortInt)                     :: idx
+    real(defReal)                         :: f, E, xs
 
     ! Search for idx, f, and xs for the lower energy limit
     call self % search(idx, f, lowerE)
 
-    lowerXS = totalXS(self, idx, f)
+    ! Conservative: choose the xs at the energy point before the lower energy limit
+    f = 0
+    maj = self % totalXS(idx, f)
 
-    ! initially set interpolated lower bound as maximum xs
-    maxXS = lowerXS
+    majorantLoop: do
 
-    ! Start loop at next index after lower energy bound
-    i = idx + 1
-
-    maxXSLoop: do
+      ! Increase index
+      idx = idx + 1
 
       ! Find XS and energy at index
-      xs = self % mainData(TOTAL_XS, i)
-      e = self % eGrid(i)
+      xs = self % mainData(TOTAL_XS, idx)
+      E = self % eGrid(idx)
 
-      ! when e below upper bound accept or reject new maxXS
-      if (e < upperE) then
-
-        if (maxXS < xs) then
-          maxXS = xs
-        end if
-
-      ! otherwise check if xs at next index is larger than exisitng max
-      else if (e==upperE) then
-        ! check if xs of last index is larger
-        if (maxXS < xs) then
-          maxXS = xs
-        end if
-
-        ! as last energy index, end loop here
-        exit maxXSLoop
-      else
-        if (xs > maxXS) then
-
-          ! do Interpolation and return xs
-          f = (upperE - self % eGrid(i-1)) / (self % eGrid(i) - self % eGrid(i-1))
-          xs = self % mainData(TOTAL_XS, i) * f + (ONE-f) * self % mainData(TOTAL_XS, i-1)
-
-          ! Check if new interpolated xs is larger than exisitng maximum, if yes then reassign
-          if (xs > maxXS) then
-            maxXS = xs
-          end if
-
-          ! end of loop is reached and loop exited
-          exit maxXSLoop
-
-        ! if xs at the next index after energy range is not greater than existing max then exit loop
-        else
-
-          ! end of loop is reached and loop exited
-          exit maxXSLoop
-
-        end if
-
+      ! Compare cross sections and possibly update majorant
+      if (xs > maj) then
+        maj = xs
       end if
 
-      ! increase counter
-      i = i + 1
+      ! Exit loop after getting to the upper energy limit
+      if (E > upperE) exit majorantLoop
 
-    end do maxXSLoop
+    end do majorantLoop
 
-  end function maxXSt
+  end function totNucTMaj
 
 
 

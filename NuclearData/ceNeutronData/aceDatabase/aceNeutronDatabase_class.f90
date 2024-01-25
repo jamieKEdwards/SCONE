@@ -102,8 +102,8 @@ module aceNeutronDatabase_class
     procedure :: updateMicroXSs
 
     !aceNeutronDatabase Procedres
-    procedure :: updateTempMicroMajorantXS
-    procedure :: updateTempMacroMajorantXS
+    procedure :: getScattMicroMajXS
+    procedure :: getTempMacroMajXS
 
 
 
@@ -511,43 +511,40 @@ contains
   !! The function finds the upper and lower limits of the energy range from which the TmajXS is found in aceNeutronNuclide.
   !! These xs for these energies are found and all inbetween, the maximum is taken and returned as TmajXS
   !!
-  !!Args:
+  !! Args:
   !!   A [in]         -> Nuclide mass number
   !!   kT [in]        -> Thermal energy of nuclide
   !!   E [in]         -> Energy of neutron incident to target for which temp majorant needs to be found
   !!   TmajXS [out]   -> Temperature majorant cross section
   !!
 
-  function updateTempMicroMajorantXS(self, E, kT, A, nucIdx) result(TmajXs)
+  function getScattMicroMajXS(self, E, kT, A, nucIdx) result(maj)
     class(aceNeutronDatabase), intent(in) :: self
-    !class(aceNeutronNuclide), pointer     :: nuc
     real(defReal), intent(in)             :: E
     real(defReal), intent(in)             :: kT
     real(defReal), intent(in)             :: A
     integer(shortInt), intent(in)         :: nucIdx
-    real(defReal)                         :: TmajXS
+    real(defReal)                         :: maj
     real(defReal)                         :: E_upper, E_lower, E_min, E_max
     real(defReal)                         :: alpha
 
-    ! Truncation width of MB dist. Change the first number to vary the width multiple.
-    alpha = 3 / (sqrt( E * A / kT ))
-
-    ! Upper and lower energy limits within the highest cross section should be found
+    ! Find energy limits to define majorant calculation range
+    alpha = 4 / (sqrt( E * A / kT ))
     E_upper = E * (1 + alpha) * (1 + alpha)
     E_lower = E * (1 - alpha) * (1 - alpha)
 
-
-    ! Call through system minimum and maximum energies
+    ! Find system minimum and maximum energies
     call self % energyBounds(E_min, E_max)
 
-    ! Avoid MB dist extending into energies outside system range
+    ! Avoid energy limits being outside system range
     if (E_lower < E_min) E_lower = E_min
-    if (E_max < E_lower) E_upper = E_max
+    if (E_upper > E_max) E_upper = E_max
 
-    ! use function in nuclide to find largest scattering xs in range of E_upper and E_lower
-    TmajXS = self % nuclides(nucIdx) % maxXSs(E_lower, E_upper)
+    ! Find largest elastic scattering xs in energy range given by E_lower and E_upper
+    maj = self % nuclides(nucIdx) % elScatteringMaj(E_lower, E_upper)
 
-  end function updateTempMicroMajorantXS
+  end function getScattMicroMajXS
+
 
   !!
   !! Subroutine to update the temperature majorant in a given nuclide at given temperature
@@ -555,11 +552,10 @@ contains
   !! These xs for these energies are found and all inbetween, the maximum is taken and returned as TmajXS
   !!
   !!Args:
-  !!   A [in]         -> Nuclide mass number
-  !!   kT [in]        -> Thermal energy of nuclide
+  !!   matIdx [in]    -> Index of material for macroscopic material wise temperature majorant to be found
   !!   E [in]         -> Energy of neutron incident to target for which temp majorant needs to be found
   !!
-  subroutine updateTempMacroMajorantXS(self, E, matIdx)
+  subroutine getTempMacroMajXS(self, E, matIdx)
     class(aceNeutronDatabase), intent(in) :: self
     real(defReal), intent(in)             :: E
     integer(shortInt), intent(in)         :: matIdx
@@ -569,7 +565,7 @@ contains
     real(defReal)                         :: alpha, dens, corrFact
     real(defReal)                         :: deltakT, matkT, kT
     real(defReal)                         :: A
-    character(100), parameter :: Here = 'updateTempMacroMajorantXS (aceNeutronDatabase_class.f90)'
+    character(100), parameter :: Here = 'getTempMacroMajXS (aceNeutronDatabase_class.f90)'
 
 
     matItem => mm_getMatPtr(matIdx)
@@ -620,6 +616,7 @@ contains
 
       ! use function in nuclide to find largest total xs in range of E_upper and E_lower and add to subtotal
       cache_nuclideCache(nucIdx) % TmajXS = self % nuclides(nucIdx) % maxXSt(E_lower, E_upper)  * corrFact
+      
       ! sum nuclide majorants to find mat majorant
       mat % xss % total = mat % xss % total  + cache_nuclideCache(nucIdx) % TmajXS * dens
 
@@ -627,7 +624,7 @@ contains
 
   end associate
 
-end subroutine updateTempMacroMajorantXS
+end subroutine getTempMacroMajXS
 
 
 
@@ -809,45 +806,48 @@ end subroutine updateTempMacroMajorantXS
   !!
   !!  Checks through all nuclides, creates map with nuclides present and corresponding 0K nuclide
   !!
-  !!  NOTE: compares the first 5 letters of the ZAID.TT. It would be wrong with isotopes
-  !!        with Z > 99
-  !!
-  subroutine init_DBRC(self, DBRC_nucs, nucSet, map)
-    class(aceNeutronDatabase), intent(inout)    :: self
-    !class(aceNeutronNuclide), pointer           :: nuc
-    character(nameLen), dimension(:), intent(in):: DBRC_nucs
-    type(charMap), intent(in)                   :: nucSet
-    type(intMap), intent(out)                   :: map
-    integer(shortInt)                           :: i, j, k, idx
-    character(nameLen)                          :: nuc0K, nucDBRC
-    character(5)                                :: nuc0Ktemp, nucDBRCtemp
+  subroutine init_DBRC(self, nucDBRC, nucSet, map)
+    class(aceNeutronDatabase), intent(inout)     :: self
+    character(nameLen), dimension(:), intent(in) :: nucDBRC
+    type(charMap), intent(in)                    :: nucSet
+    type(intMap), intent(out)                    :: map
+    integer(shortInt)                            :: i, j, idx0K, last
+    character(nameLen)                           :: nuc0K, nucTemp
 
-    idx = 1
+    idx0K = 1
 
-    !start loop through all nuclides
-    do i = 1, size(DBRC_nucs)
-      nuc0K = DBRC_nucs(i)
-      nuc0Ktemp = nuc0K(1:5)
+    ! Loop through DBRC nuclides
+    do i = 1, size(nucDBRC)
 
-      k = nucSet % begin()
-      do while (k /= nucSet % end())
-        if (nucSet % atKey(k) == nuc0K) then
-          idx = nucSet % atVal(k)
-          exit
-        end if
-        k = nucSet % next(k)
-      end do
+      ! Get ZAID with 0K temperature code
+      nuc0K = trim(nucDBRC(i))//'.00'
 
+      ! Find the nucIdxs of the 0K DBRC nuclides
+      idx0K = nucSet % get(nuc0K)
+
+      ! Loop through nucSet to find the nucIdxs of the DBRC nuclides with
+      ! temperature different from 0K
       j = nucSet % begin()
       do while (j /= nucSet % end())
-        nucDBRC = nucSet % atKey(j)
-        nucDBRCtemp = nucDBRC(1:5)
-        if (nucDBRCtemp == nuc0Ktemp) then
-          call map % add(nucSet % atVal(j), idx)
-          self % nuclides(nucSet % atVal(j)) % isNucDBRC = .true.
+
+        ! Get ZAIDs in the nuclide set without temperature code
+        nucTemp = nucSet % atKey(j)
+        ! Remove temperature code (.TT)
+        last = len_trim(nucTemp)
+        nucTemp = nucTemp(1:last-3)
+
+        ! If the ZAID of the DBRC nuclide matches one in nucSet, save them in the map
+        if (nucTemp == nucDBRC(i)) then
+          call map % add(nucSet % atVal(j), idx0K)
+          ! Set nuclide DBRC flag on
+          call self % nuclides(nucSet % atVal(j)) % set(DBRC = .true.)
         end if
+
+        ! Increment index
         j = nucSet % next(j)
+
       end do
+
     end do
 
   end subroutine init_DBRC
