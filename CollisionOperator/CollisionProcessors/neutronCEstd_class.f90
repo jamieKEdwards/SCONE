@@ -59,6 +59,8 @@ module neutronCEstd_class
   !!              kT is target material temperature in [MeV]. (default = 400.0)
   !!  thresh_A -> Mass threshold for explicit tratment of target nuclide movement [Mn].
   !!              Target movment is sampled if target mass A < thresh_A. (default = 1.0)
+  !!  DBRCeMin -> Minimum energy to which DBRC is applied
+  !!  DBRCeMax -> Maximum energy to which DBRC is applied
   !!
   !! Sample dictionary input:
   !!   collProcName {
@@ -87,8 +89,8 @@ module neutronCEstd_class
     !! Settings - private
     real(defReal) :: minE
     real(defReal) :: maxE
-    real(defReal) :: tresh_E
-    real(defReal) :: tresh_A
+    real(defReal) :: thresh_E
+    real(defReal) :: thresh_A
     real(defReal) :: DBRCeMin
     real(defReal) :: DBRCeMax
 
@@ -130,19 +132,23 @@ contains
     call dict % getOrDefault(self % maxE,'maxEnergy',20.0_defReal)
 
     ! Thermal scattering kernel thresholds
-    call dict % getOrDefault(self % tresh_E, 'energyThreshold', 400.0_defReal)
-    call dict % getOrDefault(self % tresh_A, 'massThreshold', 1.0_defReal)
+    call dict % getOrDefault(self % thresh_E, 'energyThreshold', 400.0_defReal)
+    call dict % getOrDefault(self % thresh_A, 'massThreshold', 1.0_defReal)
 
     ! Verify settings
     if( self % minE < ZERO ) call fatalError(Here,'-ve minEnergy')
     if( self % maxE < ZERO ) call fatalError(Here,'-ve maxEnergy')
     if( self % minE >= self % maxE) call fatalError(Here,'minEnergy >= maxEnergy')
-    if( self % tresh_E < 0) call fatalError(Here,' -ve energyThreshold')
-    if( self % tresh_A < 0) call fatalError(Here,' -ve massThreshold')
+    if( self % thresh_E < 0) call fatalError(Here,' -ve energyThreshold')
+    if( self % thresh_A < 0) call fatalError(Here,' -ve massThreshold')
 
     !Read in DBRC max and min energy cut off
     !if dict % isPresent(self % DBRC) then
     ! maybe can go without the if function
+    call dict % getOrDefault(self % DBRCeMin,'DBRCeMin', (1.0E-8_defReal))
+    call dict % getOrDefault(self % DBRCeMax,'DBRCeMax', (200E-6_defReal))
+
+    ! DBRC energy limits
     call dict % getOrDefault(self % DBRCeMin,'DBRCeMin', (1.0E-8_defReal))
     call dict % getOrDefault(self % DBRCeMax,'DBRCeMax', (200E-6_defReal))
 
@@ -292,6 +298,7 @@ contains
         pTemp % dir = dir
         pTemp % E   = E_out
         pTemp % wgt = wgt
+        pTemp % collisionN = 0
 
         call nextCycle % detain(pTemp)
       end do
@@ -340,7 +347,7 @@ subroutine elastic(self, p, collDat, thisCycle, nextCycle)
   class(particleDungeon),intent(inout)    :: nextCycle
   class(uncorrelatedReactionCE), pointer  :: reac
   type(materialItem), pointer             :: matItem
-  logical(defBool)                        :: isFixed, nucDBRC
+  logical(defBool)                        :: isFixed, hasDBRC
   real(defReal)                           :: matkT
   character(100),parameter :: Here = 'elastic (neutronCEstd_class.f90)'
 
@@ -374,8 +381,11 @@ subroutine elastic(self, p, collDat, thisCycle, nextCycle)
   self % aceData => aceNeutronDatabase_CptrCast(self % xsData)
   if(.not.associated(self % aceData)) call fatalError(Here, 'Failed to retive ACE Neutron Database')
 
-  isFixed = (p % E > collDat % kT * self % tresh_E) .and. (collDat % A > self % tresh_A)
-  nucDBRC = ( self % aceNuc % isNucDBRC .and. self % aceData % hasDBRC)
+  ! Check is DBRC is on
+  hasDBRC = self % nuc % hasDBRC()
+
+  isFixed = (.not. hasDBRC) .and. (p % E > collDat % kT * self % thresh_E) &
+            & .and. (collDat % A > self % thresh_A)
 
   ! Apply criterion for Free-Gas vs Fixed Target scattering
   if (.not. reac % inCMFrame()) then
@@ -498,63 +508,54 @@ end subroutine elastic
     class(neutronCEstd), intent(inout)         :: self
     class(particle), intent(inout)             :: p
     type(collisionData),intent(inout)          :: collDat
-    class(uncorrelatedReactionCE), pointer     :: reac
-    integer(shortInt)                          :: MT, nucIdx
+    class(uncorrelatedReactionCE), intent(in)  :: reac
+    class(ceNeutronNuclide), pointer           :: ceNuc0K
+    integer(shortInt)                          :: nucIdx
     real(defReal)                              :: A, kT, mu
     real(defReal),dimension(3)                 :: V_n           ! Neutron velocity (vector)
     real(defReal)                              :: U_n           ! Neutron speed (scalar)
     real(defReal),dimension(3)                 :: dir_pre       ! Pre-collision direction
     real(defReal),dimension(3)                 :: dir_post      ! Post-collicion direction
     real(defReal),dimension(3)                 :: V_t, V_cm     ! Target and CM velocity
-    real(defReal)                              :: phi, dummy    ! Target and CM velocity
-    real(defReal)                              :: TmajXS
-    logical(defBool)                           :: eRange, nucDBRC
-    character(100), parameter :: Here = 'Scatter From Moving (neutronCEstd_class.f90)'
+    real(defReal)                              :: phi, dummy
+    real(defReal)                              :: maj
+    logical(defBool)                           :: inEnergyRange, hasDBRC
+    character(100), parameter :: Here = 'ScatterFromMoving (neutronCEstd_class.f90)'
 
-    nucIdx = 0
-
-    ! Read data
+    ! Read collision data
     A      = collDat % A
     kT     = collDat % kT
-    MT     = collDat % MT
     nucIdx = collDat % nucIdx
 
     ! Get neutron direction and velocity
     dir_pre = p % dirGlobal()
     V_n     = dir_pre * sqrt(p % E)
 
+    ! Sample target velocity with constant XS or with DBRC
+    ! Check energy range
+    inEnergyRange = ((p % E <= self % DBRCeMax) .and. (self % DBRCeMin <= p % E))
+    ! Check if DBRC is on for this target nuclide
+    hasDBRC = self % nuc % hasDBRC()
 
-    !cast pointer to aceNeutronNuclide
-    self % aceNuc => aceNeutronNuclide_CptrCast(self % xsData % getNuclide(collDat % nucIdx))
-    if(.not.associated(self % aceNuc)) call fatalError(Here, 'Failed to retive ACE Neutron Nuclide')
+    if (inEnergyRange .and. hasDBRC) then
 
-    !cast pointer to aceNeutronDatabase
-    self % aceData => aceNeutronDatabase_CptrCast(self % xsData)
-    if(.not.associated(self % aceData)) call fatalError(Here, 'Failed to retive ACE Neutron Database')
+      ! Retrieve 0K nuclide index from DBRC nuclide map
+      nucIdx = self % xsData % mapDBRCnuc % get(nucIdx)
 
+      ! Assign pointer for the 0K nuclide
+      ceNuc0K => ceNeutronNuclide_CptrCast(self % xsData % getNuclide(nucIdx))
+      if(.not.associated(ceNuc0K)) call fatalError(Here, 'Failed to retrieve CE Neutron Nuclide')
 
+      ! Get elastic scattering 0K majorant
+      maj = self % xsData % getScattMicroMajXS(p % E, kT, A, nucIdx)
 
-    ! Sample velocity of target with constant xs or with dbrc depending on switch and input files
-    ! dbrc requires energy less than emax, greater than emin and nuclide to be listed with 0K XS
-    eRange = ((p % E <= self % DBRCeMax) .and. (self % DBRCeMin <= p % E))
-    nucDBRC = ( self % aceNuc % isNucDBRC .and. self % aceData % hasDBRC)
-
-    if (eRange .and. nucDBRC) then
-
-      !Retrive 0K nuclide index from dbrc nuclide map
-      nucIdx = self % aceData % intMapDBRCnucs % get(nucIdx)
-
-      ! Reassign pointer for the 0K nuclide
-      self % aceNuc => aceNeutronNuclide_CptrCast(self % xsData % getNuclide(nucIdx))
-
-      ! set temp majorant
-      TmajXS = self % aceData % updateTempMicroMajorantXS(p % E, kT, A, nucIdx)
-
-      ! use dbrc (non constant cross section) to sample target velocity
-      V_t = targetVelocity_DBRCXS(self % aceNuc, p % E, dir_pre, A, kT, p % pRNG, TmajXS)
+      ! Use DBRC to sample target velocity
+      V_t = targetVelocity_DBRCXS(ceNuc0K, p % E, dir_pre, A, kT, p % pRNG, maj)
 
     else
+      ! Constant cross section approximation
       V_t = targetVelocity_constXS(p % E, dir_pre, A, kT, p % pRNG)
+
     end if
 
     ! Calculate Centre-of-Mass velocity

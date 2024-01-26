@@ -196,7 +196,7 @@ contains
     class(RNG), intent(inout)            :: rand
 
     ! Check Cache and update if needed
-    if(materialCache(self % matIdx) % E_tail /= E) then
+    if (materialCache(self % matIdx) % E_tail /= E .or. materialCache(self % matIdx) % E_tot /= E) then
       call self % data % updateMacroXSs(E, self % matIdx, rand)
     end if
 
