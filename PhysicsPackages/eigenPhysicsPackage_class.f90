@@ -61,6 +61,9 @@ module eigenPhysicsPackage_class
   ! Visualisation
   use visualiser_class,               only : visualiser
 
+  ! Bezier diagnostics
+  use bezierVolume_class,             only : printBezierDiagnostics
+
   implicit none
   private
 
@@ -130,6 +133,7 @@ contains
     call self % cycles(self % inactiveTally, self % inactiveAtch, self % N_inactive)
     call self % cycles(self % activeTally, self % activeAtch, self % N_active)
     call self % collectResults()
+    call printBezierDiagnostics()
 
     print *
     print *, "\/\/ END OF EIGENVALUE CALCULATION \/\/"

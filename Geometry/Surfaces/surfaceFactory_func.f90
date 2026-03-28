@@ -16,8 +16,8 @@ module surfaceFactory_func
   use squareCylinder_class, only : squareCylinder
   use truncCylinder_class,  only : truncCylinder
   use bezierShape_class,    only : bezierShape
-  use bezierVolume_class,   only : bezierVolume
   use bezierTwist_class,    only : bezierTwist
+  use bezierVolume_class,   only : bezierVolume
 
   implicit none
   private

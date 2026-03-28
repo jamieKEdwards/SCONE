@@ -1,0 +1,155 @@
+type eigenPhysicsPackage;
+
+pop      2000;
+active   10;
+inactive 5;
+XSdata ce;
+dataType ce;
+outputFile bezierVolume_test;
+outputFormat asciiJSON;
+
+collisionOperator { neutronCE { type neutronCEstd; } }
+
+transportOperator { type transportOperatorDT; }
+
+inactiveTally {}
+
+activeTally {
+  display (k_eff);
+  k_eff { type keffAnalogClerk; }
+}
+
+geometry {
+    type geometryStd;
+    boundary (1 1 1 1 1 1);
+    graph { type shrunk; }
+
+    surfaces {
+      outerBox { id 1; type box; origin (0.0 0.0 0.0); halfwidth (2.0 2.0 2.0); }
+
+      sphere_vol {
+        type bezierVolume;
+        id 2;
+        numPatches 8;
+        ctrlPts (
+          // ---- Patch 1: +x +y +z octant ----
+          // Row 1: collapsed to north pole (0,0,1.5)
+           0.0     0.0     1.5    0.0     0.0     1.5    0.0     0.0     1.5    0.0     0.0     1.5
+          // Row 2: arcs departing from pole
+           0.8285  0.0     1.5    0.7190  0.3858  1.5    0.3858  0.7190  1.5    0.0     0.8285  1.5
+          // Row 3: mid-arcs
+           1.5     0.0     0.8285 1.3334  0.7190  0.8285 0.7190  1.3334  0.8285 0.0     1.5     0.8285
+          // Row 4: equatorial arc from (1.5,0,0) to (0,1.5,0)
+           1.5     0.0     0.0    1.5     0.8285  0.0    0.8285  1.5     0.0    0.0     1.5     0.0
+
+          // ---- Patch 2: -x +y +z octant ----
+           0.0     0.0     1.5    0.0     0.0     1.5    0.0     0.0     1.5    0.0     0.0     1.5
+          -0.8285  0.0     1.5   -0.7190  0.3858  1.5   -0.3858  0.7190  1.5    0.0     0.8285  1.5
+          -1.5     0.0     0.8285 -1.3334 0.7190  0.8285 -0.7190 1.3334  0.8285 0.0     1.5     0.8285
+          -1.5     0.0     0.0   -1.5     0.8285  0.0   -0.8285  1.5     0.0    0.0     1.5     0.0
+
+          // ---- Patch 3: -x -y +z octant ----
+           0.0     0.0     1.5    0.0     0.0     1.5    0.0     0.0     1.5    0.0     0.0     1.5
+          -0.8285  0.0     1.5   -0.7190 -0.3858  1.5   -0.3858 -0.7190  1.5    0.0    -0.8285  1.5
+          -1.5     0.0     0.8285 -1.3334 -0.7190 0.8285 -0.7190 -1.3334 0.8285 0.0    -1.5     0.8285
+          -1.5     0.0     0.0   -1.5    -0.8285  0.0   -0.8285 -1.5     0.0    0.0    -1.5     0.0
+
+          // ---- Patch 4: +x -y +z octant ----
+           0.0     0.0     1.5    0.0     0.0     1.5    0.0     0.0     1.5    0.0     0.0     1.5
+           0.8285  0.0     1.5    0.7190 -0.3858  1.5    0.3858 -0.7190  1.5    0.0    -0.8285  1.5
+           1.5     0.0     0.8285 1.3334 -0.7190  0.8285 0.7190 -1.3334  0.8285 0.0    -1.5     0.8285
+           1.5     0.0     0.0    1.5    -0.8285  0.0    0.8285 -1.5     0.0    0.0    -1.5     0.0
+
+          // ---- Patch 5: +x +y -z octant ----
+           0.0     0.0    -1.5    0.0     0.0    -1.5    0.0     0.0    -1.5    0.0     0.0    -1.5
+           0.8285  0.0    -1.5    0.7190  0.3858 -1.5    0.3858  0.7190 -1.5    0.0     0.8285 -1.5
+           1.5     0.0    -0.8285 1.3334  0.7190 -0.8285 0.7190  1.3334 -0.8285 0.0     1.5    -0.8285
+           1.5     0.0     0.0    1.5     0.8285  0.0    0.8285  1.5     0.0    0.0     1.5     0.0
+
+          // ---- Patch 6: -x +y -z octant ----
+           0.0     0.0    -1.5    0.0     0.0    -1.5    0.0     0.0    -1.5    0.0     0.0    -1.5
+          -0.8285  0.0    -1.5   -0.7190  0.3858 -1.5   -0.3858  0.7190 -1.5    0.0     0.8285 -1.5
+          -1.5     0.0    -0.8285 -1.3334 0.7190 -0.8285 -0.7190 1.3334 -0.8285 0.0     1.5    -0.8285
+          -1.5     0.0     0.0   -1.5     0.8285  0.0   -0.8285  1.5     0.0    0.0     1.5     0.0
+
+          // ---- Patch 7: -x -y -z octant ----
+           0.0     0.0    -1.5    0.0     0.0    -1.5    0.0     0.0    -1.5    0.0     0.0    -1.5
+          -0.8285  0.0    -1.5   -0.7190 -0.3858 -1.5   -0.3858 -0.7190 -1.5    0.0    -0.8285 -1.5
+          -1.5     0.0    -0.8285 -1.3334 -0.7190 -0.8285 -0.7190 -1.3334 -0.8285 0.0  -1.5    -0.8285
+          -1.5     0.0     0.0   -1.5    -0.8285  0.0   -0.8285 -1.5     0.0    0.0    -1.5     0.0
+
+          // ---- Patch 8: +x -y -z octant ----
+           0.0     0.0    -1.5    0.0     0.0    -1.5    0.0     0.0    -1.5    0.0     0.0    -1.5
+           0.8285  0.0    -1.5    0.7190 -0.3858 -1.5    0.3858 -0.7190 -1.5    0.0    -0.8285 -1.5
+           1.5     0.0    -0.8285 1.3334 -0.7190 -0.8285 0.7190 -1.3334 -0.8285 0.0    -1.5    -0.8285
+           1.5     0.0     0.0    1.5    -0.8285  0.0    0.8285 -1.5     0.0    0.0    -1.5     0.0
+        );
+      }
+    }
+
+    cells {
+      inner { type simpleCell; id 10; surfaces (-2);    filltype mat; material fuel; }
+      outer { type simpleCell; id 11; surfaces (2);     filltype mat; material water; }
+    }
+
+    universes {
+      root { id 1; type rootUniverse; border 1; fill u<2>; }
+      uni  { id 2; type cellUniverse; cells (10 11); }
+    }
+}
+
+viz {
+  slice_z {
+    type bmp;
+    output bvol_z;
+    what material;
+    centre (0.0 0.0 0.0);
+    axis z;
+    width (4.0 4.0);
+    res (400 400);
+  }
+  slice_x {
+    type bmp;
+    output bvol_x;
+    what material;
+    centre (0.0 0.0 0.0);
+    axis x;
+    width (4.0 4.0);
+    res (400 400);
+  }
+  slice_y {
+    type bmp;
+    output bvol_y;
+    what material;
+    centre (0.0 0.0 0.0);
+    axis y;
+    width (4.0 4.0);
+    res (400 400);
+  }
+}
+
+nuclearData {
+  handles {
+    ce { type aceNeutronDatabase; aceLibrary /home/jamie/nuclearData/XSdata_jeff311/jeff311.aceXS; }
+  }
+  materials {
+    numberOfGroups 69;
+
+    fuel {
+      temp 99;
+      composition {
+        92235.12    3.0000E-04;
+        92238.12    2.0000E-02;
+         8016.12    4.5100E-02;
+      }
+    }
+
+    water {
+      temp 99;
+      composition {
+        1001.06    4.7240E-02;
+        8016.06    2.3620E-02;
+      }
+    }
+  }
+}

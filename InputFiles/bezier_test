@@ -1,0 +1,191 @@
+type eigenPhysicsPackage;
+
+pop      25000;
+active   100;
+inactive 50;
+XSdata ce;
+dataType ce;
+outputFile bezier_lightbridge_main;
+
+// Specify output format default asciiMATLAB
+outputFormat asciiJSON;
+
+collisionOperator { neutronCE {type neutronCEstd;}
+//collisionOperator { neutronCE {type neutronCEstd; DBRCeMin 1.0e-8; DBRCeMax 2.0e-3;}
+                    }
+
+transportOperator { //type transportOperatorST;
+                   type transportOperatorDT;
+                   // type transportOperatorHT;
+                   }
+
+inactiveTally {}
+
+activeTally  {
+                display (k_eff);
+                norm fiss;
+                normVal 100.0;
+                k_eff { type keffAnalogClerk;}
+
+                fiss { type collisionClerk; response (fiss); fiss {type macroResponse; MT -6;}}
+
+                fluxSpectrum {type collisionClerk;
+                        map {
+                             type energyMap; grid log; min 1.0E-11; max 20.0; N 1000;
+                             }
+                        response (flux);
+                        flux { type fluxResponse;}
+                        }
+
+                fissMap {type collisionClerk;
+                        map {type multiMap; maps (map1 map2);
+                             map1 { type spaceMap; axis x; grid lin; min -4.5; max 4.5; N 1000; }
+                             map2 { type spaceMap; axis y; grid lin; min -4.5; max 4.5; N 1000; }  }
+                        response (fission);
+                        fission { type macroResponse; MT -6;}   }
+
+                fluxMap {type collisionClerk;
+                        map {type multiMap; maps (map1 map2 map3);
+                             map1 { type spaceMap; axis x; grid lin; min -4.5; max 4.5; N 1000; }
+                             map2 { type spaceMap; axis y; grid lin; min -4.5; max 4.5; N 1000; }
+                             map3 { type energyMap; grid unstruct; bins (1.0e-9 1.0e-3 20.0); }
+                             }
+                        response (f);
+                        f { type fluxResponse;}   }
+
+                U8absorption {type collisionClerk;
+                        map { type energyMap; grid log; min 1.0E-11; max 20.0; N 1000; }
+                        response (u8);
+                        u8 { type microResponse; MT 102; material u8; }
+                            }
+                }
+
+
+
+geometry {
+    type geometryStd;
+    boundary (1 1 1 1 0 0);
+    graph {type shrunk;}
+
+    surfaces
+    {
+      squareBound { id 1; type zSquareCylinder; origin (0.0 0.0 0.0); halfwidth (4.5 4.5 0.0);}
+      bl { type bezierShape; id 99; order 3; ctrlPts (
+                                                          0.9  3  0
+                                                          0.9  4.2  0
+                                                          -0.9  4.2  0
+                                                          -0.9  3  0
+                                                          -0.9  3  0
+                                                          -0.9  1.2  0
+                                                          -1.48923048  0.17942286  0
+                                                          -3.0480762  -0.72057714  0
+                                                          -3.0480762  -0.72057714  0
+                                                          -4.08730671  -1.32057714  0
+                                                          -3.18730671  -2.87942286  0
+                                                          -2.1480762  -2.27942286  0
+                                                          -2.1480762  -2.27942286  0
+                                                          -0.58923048  -1.37942286  0
+                                                          0.58923048  -1.37942286  0
+                                                          2.1480762  -2.27942286  0
+                                                          2.1480762  -2.27942286  0
+                                                          3.18730671  -2.87942286  0
+                                                          4.08730671  -1.32057714  0
+                                                          3.0480762  -0.72057714  0
+                                                          3.0480762  -0.72057714  0
+                                                          1.48923048  0.17942286  0
+                                                          0.9  1.2  0
+                                                          0.9  3  0
+                                                            );
+        }
+
+
+    }
+
+
+    cells
+    {
+    cell1 { type simpleCell; id 10; surfaces (-99); filltype mat; material water; }
+    cell2 { type simpleCell; id 11; surfaces (99); filltype mat; material fuel; }
+    }
+
+    universes
+    {
+
+      root { id 1; type rootUniverse; border 1; fill u<2>;}
+
+      uni { id 2; type cellUniverse; cells (10 11);}
+    }
+}
+
+
+viz {
+  //myVTK {
+  //  type vtk;
+  //  corner (-1.6 -1.6 0.0);
+  //  width (3.2 3.2 0);
+  //  vox (400 400 1);
+  //}
+  bmp {
+    type bmp;
+    output img;
+    what material;
+    centre (0.0 0.0 0.0);
+    //width (25.0 25.0);
+    axis z;
+    res (500 500);
+  }
+}
+
+
+
+
+nuclearData {
+  handles {
+    ce {type aceNeutronDatabase; aceLibrary /home/jamie/nuclearData/XSdata_jeff311/jeff311.aceXS;}
+    //ce {type aceNeutronDatabase; DBRC (92238); aceLibrary /home/jke26/nuclearData/XSdata_jeff311/jeff311.aceXS;}
+  }
+  materials {
+    numberOfGroups 69;
+
+
+//% --- Water with 550 ppm boron:
+    water {
+      temp 99;
+      composition {
+        1001.06    4.7240E-02;
+        8016.06    2.3620E-02;
+                  }
+           }
+// zircaloy
+     clad {
+      temp 99;
+       composition {
+          40000.06    3.9550E-02;
+          26000.06    1.3830E-04;
+          24000.06    7.0720E-05;
+           8016.06    2.8740E-04;
+                   }
+          }
+
+
+      fuel {
+        temp 99;
+        composition {
+          92235.12    3.0000E-04;
+          92238.12    2.0000E-02;
+           8016.12    4.5100E-02;
+                }
+           }
+
+       u8 {
+        temp 99;
+         composition {
+           92238.12    1.0;
+                 }
+            }
+
+
+
+
+   }
+}
