@@ -18,6 +18,7 @@ module surfaceFactory_func
   use truncCylinder_class,  only : truncCylinder
   use truncCone_class,      only : truncCone
   use wedge_class,          only : wedge
+  use neuralSurface_class,  only : neuralSurface
 
   implicit none
   private
@@ -45,7 +46,8 @@ module surfaceFactory_func
                                                                       'zTruncCylinder ',&
                                                                       'xWedge         ',&
                                                                       'yWedge         ',&
-                                                                      'zWedge         ']
+                                                                      'zWedge         ',&
+                                                                      'neuralSurface  ']
 
   ! Public interface
   public :: new_surface_ptr
@@ -106,6 +108,9 @@ contains
 
       case ('xWedge', 'yWedge', 'zWedge')
         allocate (wedge :: new)
+
+      case ('neuralSurface')
+        allocate (neuralSurface :: new)
 
       case default
         print '(A)' , ' AVAILABLE SURFACES: '

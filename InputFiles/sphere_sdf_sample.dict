@@ -1,0 +1,17 @@
+!! SDF sampling input: unit sphere, bbox = [-1.5, 1.5]^3
+!! Run: ./Build/sdfSampler.out InputFiles/sphere_sdf_sample.dict
+
+nSamples     50000;
+nearFraction 0.6;
+seed         42;
+outputFile   /tmp/sphere_sdf.bin;
+
+bboxMin (-1.5 -1.5 -1.5);
+bboxMax ( 1.5  1.5  1.5);
+
+surface {
+  type   sphere;
+  id     1;
+  origin (0.0 0.0 0.0);
+  radius 1.0;
+}

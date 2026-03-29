@@ -160,6 +160,18 @@ endif()
 add_executable(scone.out ./Apps/scone.f90)
 target_link_libraries(scone.out scone)
 
+add_executable(mlpInference_sandbox.out ./Apps/mlpInference_sandbox.f90)
+target_link_libraries(mlpInference_sandbox.out scone)
+
+add_executable(mlpRoundtrip_sandbox.out ./Apps/mlpRoundtrip_sandbox.f90)
+target_link_libraries(mlpRoundtrip_sandbox.out scone)
+
+add_executable(neuralSurface_sandbox.out ./Apps/neuralSurface_sandbox.f90)
+target_link_libraries(neuralSurface_sandbox.out scone)
+
+add_executable(sdfSampler.out ./Apps/sdfSampler.f90)
+target_link_libraries(sdfSampler.out scone)
+
 ####################################################################################################
 # COMPILE UNIT TESTS
 if(BUILD_TESTS)
