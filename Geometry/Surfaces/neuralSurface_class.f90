@@ -1,7 +1,7 @@
 module neuralSurface_class
 
   use numPrecision
-  use universalVariables, only : INF, SURF_TOL
+  use universalVariables, only : INF
   use genericProcedures,  only : fatalError, numToChar
   use dictionary_class,   only : dictionary
   use surface_inter,      only : surface
