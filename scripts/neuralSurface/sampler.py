@@ -6,9 +6,10 @@ Supports two data sources:
   2. Python-native analytic SDF for simple primitives (proof-of-concept / testing)
 
 The mixed sampling strategy follows DeepLS (Chabra et al., ECCV 2020, Sec. 4.3):
-  50% near-surface points  — uniform samples filtered to |sdf| < near_distance
-  40% volumetric points    — uniform samples throughout bbox
-  10% on-surface points    — surface samples perturbed along surface normal
+  32.5% tight near-surface — uniform samples filtered to |sdf| < 0.01R
+  32.5% loose near-surface — uniform samples filtered to |sdf| < 0.1R
+  25%   volumetric points  — uniform samples throughout bbox
+  10%   on-surface points  — surface samples perturbed along surface normal
 
 SCONE binary format (written by sdfSampler Fortran utility):
   [Header]
@@ -54,60 +55,88 @@ def load_scone_binary(filename):
 # Python-native analytic SDF generators (for testing without SCONE)
 # ---------------------------------------------------------------------------
 
+def _rejection_sample_near_surface(rng, n, bbox_min, bbox_max, center, radius, distance):
+    """Return n points uniformly from bbox with |sdf| < distance (rejection sampling)."""
+    collected = []
+    n_collected = 0
+    oversample = max(4, int(np.ceil((np.prod(bbox_max - bbox_min)) /
+                                    (4 * np.pi * radius**2 * 2 * distance))))
+    batch_size = max(n * oversample, 4096)
+    while n_collected < n:
+        batch = rng.uniform(bbox_min, bbox_max, size=(batch_size, 3))
+        sdf_b = np.linalg.norm(batch - center, axis=1) - radius
+        mask = np.abs(sdf_b) < distance
+        accepted = np.column_stack([batch[mask], sdf_b[mask]])
+        collected.append(accepted)
+        n_collected += len(accepted)
+    arr = np.vstack(collected)[:n]
+    return arr[:, :3], arr[:, 3]
+
+
 def generate_sphere_sdf(n_samples, radius, center, bbox_min, bbox_max,
-                        near_fraction=0.5, near_distance=None, seed=42):
+                        near_fraction=0.65, near_distance=None,
+                        near_distance_tight=None, seed=42):
     """
     Generate SDF training samples for a sphere using analytic formula.
     SDF(r) = |r - center| - radius   (negative inside, positive outside)
 
+    Near-surface samples are split equally between a tight band (near_distance_tight)
+    and a loose band (near_distance), giving the network good coverage at both
+    fine and coarse scales near the boundary.
+
     Args:
-        n_samples     : Total number of samples to generate
-        radius        : Sphere radius
-        center        : Array-like (3,) — sphere centre
-        bbox_min      : Array-like (3,) — sampling bounding box minimum
-        bbox_max      : Array-like (3,) — sampling bounding box maximum
-        near_fraction : Fraction of samples concentrated near the surface
-        near_distance : Truncation distance for near-surface samples.
-                        Defaults to 0.1 * radius if None.
-        seed          : Random seed
+        n_samples          : Total number of samples to generate
+        radius             : Sphere radius
+        center             : Array-like (3,) — sphere centre
+        bbox_min           : Array-like (3,) — sampling bounding box minimum
+        bbox_max           : Array-like (3,) — sampling bounding box maximum
+        near_fraction      : Fraction of samples concentrated near the surface
+                             (split equally between tight and loose bands).
+                             Default 0.65.
+        near_distance      : Loose near-surface band: keep |sdf| < near_distance.
+                             Defaults to 0.1 * radius if None.
+        near_distance_tight: Tight near-surface band: keep |sdf| < near_distance_tight.
+                             Defaults to 0.01 * radius if None.
+        seed               : Random seed
 
     Returns:
         points : ndarray (N, 3)
         sdfs   : ndarray (N,)
     """
     rng = np.random.default_rng(seed)
-    center = np.asarray(center, dtype=np.float64)
+    center   = np.asarray(center,   dtype=np.float64)
     bbox_min = np.asarray(bbox_min, dtype=np.float64)
     bbox_max = np.asarray(bbox_max, dtype=np.float64)
 
     if near_distance is None:
         near_distance = 0.1 * radius
+    if near_distance_tight is None:
+        near_distance_tight = 0.01 * radius
 
-    n_near    = int(n_samples * near_fraction)
-    n_surface = int(n_samples * 0.10)
-    n_volume  = n_samples - n_near - n_surface
+    n_near_each = int(n_samples * near_fraction / 2)   # per band
+    n_surface   = int(n_samples * 0.10)
+    n_volume    = n_samples - 2 * n_near_each - n_surface
 
     all_points = []
     all_sdfs   = []
 
-    # --- Volumetric samples ---
+    # --- Volumetric samples (25% of total) ---
     pts_vol = rng.uniform(bbox_min, bbox_max, size=(n_volume, 3))
     sdf_vol = np.linalg.norm(pts_vol - center, axis=1) - radius
     all_points.append(pts_vol)
     all_sdfs.append(sdf_vol)
 
-    # --- Near-surface samples: uniform in bbox, keep |sdf| < near_distance ---
-    # Oversample to account for rejection
-    collected = []
-    while len(collected) < n_near:
-        batch = rng.uniform(bbox_min, bbox_max, size=(n_near * 4, 3))
-        sdf_batch = np.linalg.norm(batch - center, axis=1) - radius
-        mask = np.abs(sdf_batch) < near_distance
-        accepted = np.column_stack([batch[mask], sdf_batch[mask]])
-        collected.append(accepted)
-    collected = np.vstack(collected)[:n_near]
-    all_points.append(collected[:, :3])
-    all_sdfs.append(collected[:, 3])
+    # --- Tight near-surface (32.5%): |sdf| < 0.01R ---
+    pts_t, sdf_t = _rejection_sample_near_surface(
+        rng, n_near_each, bbox_min, bbox_max, center, radius, near_distance_tight)
+    all_points.append(pts_t)
+    all_sdfs.append(sdf_t)
+
+    # --- Loose near-surface (32.5%): |sdf| < 0.1R ---
+    pts_l, sdf_l = _rejection_sample_near_surface(
+        rng, n_near_each, bbox_min, bbox_max, center, radius, near_distance)
+    all_points.append(pts_l)
+    all_sdfs.append(sdf_l)
 
     # --- On-surface samples: random point on sphere, perturb along normal ---
     # Random unit vectors give uniform points on the sphere surface

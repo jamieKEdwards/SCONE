@@ -1,0 +1,79 @@
+!! JEZEBEL benchmark (PU-MET-FAST-001 rev. 3) with analytic CSG sphere
+!! Reference: LA-UR-14-21554
+!!
+!! Bare Pu-239 sphere, physical radius 6.39157 cm
+!! Reference k_eff = 1.0000 +/- 0.0020
+!!
+!! Run: ./Build/scone.out InputFiles/csg_jezebel
+
+type eigenPhysicsPackage;
+
+pop      400000;
+active   500;
+inactive 20;
+XSdata   ceData;
+dataType ce;
+outputFile csgJezebel;
+outputFormat asciiJSON;
+
+collisionOperator { neutronCE { type neutronCEstd; } }
+
+transportOperator { type transportOperatorDT; }
+
+inactiveTally {}
+
+activeTally {
+  display (k_eff);
+  norm fiss;
+  normVal 100.0;
+  k_eff { type keffAnalogClerk; }
+  fiss  { type collisionClerk; response (fiss); fiss { type macroResponse; MT -6; } }
+  flux  { type collisionClerk;
+          map { type energyMap; grid log; min 0.001; max 20; N 1000; }
+          response (flux); flux { type fluxResponse; }
+        }
+}
+
+geometry {
+    type geometryStd;
+    boundary (0 0 0 0 0 0);
+    graph { type shrunk; }
+
+    surfaces {
+      !! Outer boundary
+      outerBox { id 1; type box; origin (0.0 0.0 0.0); halfwidth (10.0 10.0 10.0); }
+
+      !! Analytic CSG sphere: exact Jezebel radius
+      jezebel_sphere { id 2; type sphere; origin (0.0 0.0 0.0); radius 6.39157; }
+    }
+
+    cells {
+      fuel_region  { type simpleCell; id 10; surfaces (-2);  filltype mat; material fuel; }
+      outer_region { type simpleCell; id 11; surfaces (2);   filltype mat; material void; }
+    }
+
+    universes {
+      root { id 1; type rootUniverse; border 1; fill u<2>; }
+      uni  { id 2; type cellUniverse; cells (10 11); }
+    }
+}
+
+nuclearData {
+  handles {
+    ceData { type aceNeutronDatabase; aceLibrary /home/jamie/nuclearData/XSdata_jeff311/jeff311.aceXS; }
+  }
+
+  materials {
+    fuel {
+      temp 273;
+      composition {
+        94239.03  0.037047;
+        94240.03  0.0017512;
+        94241.03  0.00011674;
+        31069.03  0.00083603;
+        31071.03  0.00053917;
+      }
+    }
+
+  }
+}

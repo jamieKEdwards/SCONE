@@ -322,7 +322,7 @@ contains
   !!
   !! See cell_inter for details
   !!
-  pure function inside(self, r, u) result(isIt)
+  function inside(self, r, u) result(isIt)
     class(unionCell), intent(in)            :: self
     real(defReal), dimension(3), intent(in) :: r
     real(defReal), dimension(3), intent(in) :: u
@@ -360,7 +360,7 @@ contains
   !!
   !! See cell_inter for details
   !!
-  pure function insideComplex(self, r, u) result(isIt)
+  function insideComplex(self, r, u) result(isIt)
     class(unionCell), intent(in)            :: self
     real(defReal), dimension(3), intent(in) :: r
     real(defReal), dimension(3), intent(in) :: u

@@ -71,6 +71,9 @@ module eigenPhysicsPackage_class
   ! Visualisation
   use visualiser_class,               only : visualiser
 
+  ! Neural surface diagnostics
+  use neuralSurface_class,            only : printNeuralDiagnostics
+
   implicit none
   private
 
@@ -145,6 +148,8 @@ contains
 
     call self % cycles(self % inactiveTally, self % inactiveAtch, self % N_inactive)
     call self % cycles(self % activeTally, self % activeAtch, self % N_active)
+
+    call printNeuralDiagnostics()
 
     ! Collect results from other processes
     call self % inactiveTally % collectDistributed()

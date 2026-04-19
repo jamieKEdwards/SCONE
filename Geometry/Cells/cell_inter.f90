@@ -85,7 +85,7 @@ module cell_inter
     !! Result:
     !!   True if position is inside the cell. False otherwsie
     !!
-    pure function inside(self, r, u) result(isIt)
+    function inside(self, r, u) result(isIt)
       import :: cell, defReal, defBool
       class(cell), intent(in)                 :: self
       real(defReal), dimension(3), intent(in) :: r

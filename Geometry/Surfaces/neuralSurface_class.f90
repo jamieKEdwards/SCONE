@@ -13,6 +13,12 @@ module neuralSurface_class
 
   character(*), parameter :: TYPE_NAME = 'neuralSurface'
 
+  ! Module-level diagnostic counters and file handle
+  integer(longInt), public              :: neuralSurf_nCalls    = 0_longInt
+  integer(longInt), public              :: neuralSurf_nMisclass = 0_longInt
+  integer(shortInt), parameter, private :: DIAG_UNIT = 97
+  logical(defBool),  save,      private :: diagFileOpen = .false.
+
   !!
   !! Neural SDF surface
   !!
@@ -38,11 +44,18 @@ module neuralSurface_class
   !!      }
   !!
   !! Private Members:
-  !!   mlp -> Trained MLP loaded from weight file at init time
+  !!   mlp        -> Trained MLP loaded from weight file at init time
+  !!   geomScale  -> Geometric scale factor: physical coords are divided by this
+  !!                 before MLP evaluation, allowing a unit-sphere weight file to
+  !!                 represent a sphere of arbitrary radius. Default 1.0 (no scaling).
+  !!   diagRefR2  -> Reference sphere R^2 for misclassification diagnostics;
+  !!                 0 means diagnostic is disabled (default)
   !!
   type, public, extends(surface) :: neuralSurface
     private
     type(trainedMLP) :: mlp
+    real(defReal)    :: geomScale  = ONE
+    real(defReal)    :: diagRefR2  = ZERO
   contains
     procedure :: myType
     procedure :: init
@@ -50,8 +63,11 @@ module neuralSurface_class
     procedure :: evaluate
     procedure :: distance
     procedure :: going
+    procedure :: halfspace
     final     :: finaliseNeuralSurface
   end type neuralSurface
+
+  public :: printNeuralDiagnostics
 
 contains
 
@@ -85,6 +101,7 @@ contains
     class(dictionary), intent(in)       :: dict
     integer(shortInt)             :: id
     character(pathLen)            :: weightFile
+    real(defReal)                 :: diagRadius
     character(100), parameter :: Here = 'init (neuralSurface_class.f90)'
 
     call dict % get(id, 'id')
@@ -97,6 +114,29 @@ contains
 
     call readMLPWeights(self % mlp, trim(weightFile))
     call self % setId(id)
+
+    ! Optional geometric scale: divides physical coords before MLP evaluation.
+    ! Allows a unit-sphere weight file to represent a sphere of arbitrary radius.
+    if (dict % isPresent('geometricScale')) then
+      call dict % get(self % geomScale, 'geometricScale')
+      if (self % geomScale <= ZERO) &
+        call fatalError(Here, 'geometricScale must be positive')
+    else
+      self % geomScale = ONE
+    end if
+
+    ! Optional diagnostic: reference sphere radius for misclassification counting
+    if (dict % isPresent('diagRadius')) then
+      call dict % get(diagRadius, 'diagRadius')
+      self % diagRefR2 = diagRadius * diagRadius
+      if (.not. diagFileOpen) then
+        open(unit=DIAG_UNIT, file='neural_misclass.dat', status='replace', action='write')
+        write(DIAG_UNIT, '(A)') '# x  y  z  neural_outside  sphere_outside  sdf'
+        diagFileOpen = .true.
+      end if
+    else
+      self % diagRefR2 = ZERO
+    end if
 
   end subroutine init
 
@@ -111,8 +151,8 @@ contains
     class(neuralSurface), intent(in) :: self
     real(defReal), dimension(6)      :: aabb
 
-    aabb(1:3) = self % mlp % bboxMin
-    aabb(4:6) = self % mlp % bboxMax
+    aabb(1:3) = self % mlp % bboxMin * self % geomScale
+    aabb(4:6) = self % mlp % bboxMax * self % geomScale
 
   end function boundingBox
 
@@ -129,7 +169,7 @@ contains
     real(defReal), dimension(3), intent(in) :: r
     real(defReal)                           :: c
 
-    c = self % mlp % evaluate(r)
+    c = self % mlp % evaluate(r / self % geomScale) * self % geomScale
 
   end function evaluate
 
@@ -167,9 +207,84 @@ contains
     logical(defBool)                        :: hs
     real(defReal), parameter :: FD_STEP = 1.0e-7_defReal
 
-    hs = self % mlp % evaluate(r + FD_STEP * u) > ZERO
+    hs = self % mlp % evaluate((r + FD_STEP * u) / self % geomScale) > ZERO
 
   end function going
+
+  !!
+  !! Return true if particle is in +ve halfspace
+  !!
+  !! Overrides the default surface_inter implementation to add runtime
+  !! misclassification diagnostics when diagRadius is set in the input.
+  !! For each call, the neural halfspace is compared against the analytic
+  !! sphere and the module-level OMP ATOMIC counters are updated.
+  !!
+  !! See surface_inter for details
+  !!
+  function halfspace(self, r, u) result(hs)
+    class(neuralSurface), intent(in)        :: self
+    real(defReal), dimension(3), intent(in) :: r
+    real(defReal), dimension(3), intent(in) :: u
+    logical(defBool)                        :: hs
+    logical(defBool)                        :: sphere_hs
+    real(defReal)                           :: c
+
+    ! Evaluate neural SDF and determine halfspace
+    c = self % mlp % evaluate(r / self % geomScale) * self % geomScale
+    if (abs(c) < self % surfTol()) then
+      hs = self % going(r, u)
+    else
+      hs = c > ZERO
+    end if
+
+    ! Misclassification diagnostic: compare with analytic sphere (if enabled)
+    if (self % diagRefR2 > ZERO) then
+      sphere_hs = (r(1)*r(1) + r(2)*r(2) + r(3)*r(3) - self % diagRefR2) > ZERO
+      !$omp atomic
+      neuralSurf_nCalls = neuralSurf_nCalls + 1_longInt
+      if (hs .neqv. sphere_hs) then
+        !$omp atomic
+        neuralSurf_nMisclass = neuralSurf_nMisclass + 1_longInt
+        if (diagFileOpen) then
+          !$omp critical(neuralDiag)
+          write(DIAG_UNIT, '(3ES16.8, 2L3, ES16.8)') r(1), r(2), r(3), hs, sphere_hs, c
+          !$omp end critical(neuralDiag)
+        end if
+      end if
+    end if
+
+  end function halfspace
+
+  !!
+  !! Print misclassification diagnostic summary
+  !!
+  !! Prints total halfspace call count and misclassification count/rate.
+  !! Does nothing if no calls were tallied (diagnostic not enabled or not used).
+  !!
+  subroutine printNeuralDiagnostics()
+    real(defReal) :: pct
+
+    if (neuralSurf_nCalls == 0_longInt) return
+
+    pct = 100.0_defReal * real(neuralSurf_nMisclass, defReal) / real(neuralSurf_nCalls, defReal)
+
+    print '(A)', ''
+    print '(A)', '--- Neural Surface Halfspace Diagnostic ---'
+    print '(A,I0)', '  Total halfspace calls : ', neuralSurf_nCalls
+    print '(A,I0)', '  Misclassified calls   : ', neuralSurf_nMisclass
+    print '(A,F8.4,A)', '  Misclassification rate: ', pct, ' %'
+    if (diagFileOpen) then
+      print '(A)', '  Details written to: neural_misclass.dat'
+      write(DIAG_UNIT, '(A)')       '# ---- Summary ----'
+      write(DIAG_UNIT, '(A,I0)')    '# Total calls:   ', neuralSurf_nCalls
+      write(DIAG_UNIT, '(A,I0)')    '# Misclassified: ', neuralSurf_nMisclass
+      write(DIAG_UNIT, '(A,F8.4,A)') '# Rate:          ', pct, ' %'
+      close(DIAG_UNIT)
+      diagFileOpen = .false.
+    end if
+    print '(A)', '-------------------------------------------'
+
+  end subroutine printNeuralDiagnostics
 
   !!
   !! Finaliser: release MLP weight arrays when object is destroyed
