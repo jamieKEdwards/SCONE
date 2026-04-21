@@ -1,11 +1,11 @@
 module surfaceFactory_func
 
   use numPrecision
-  use genericProcedures, only : fatalError
-  use dictionary_class,  only : dictionary
+  use genericProcedures,    only : fatalError
+  use dictionary_class,     only : dictionary
 
   ! Surface interface
-  use surface_inter,     only : surface
+  use surface_inter,        only : surface
 
   ! Surfaces
   use aPlane_class,         only : aPlane
@@ -19,6 +19,9 @@ module surfaceFactory_func
   use truncCone_class,      only : truncCone
   use wedge_class,          only : wedge
   use neuralSurface_class,  only : neuralSurface
+  use bezierShape_class,    only : bezierShape
+  use bezierTwist_class,    only : bezierTwist
+  use bezierVolume_class,   only : bezierVolume
 
   implicit none
   private
@@ -47,7 +50,10 @@ module surfaceFactory_func
                                                                       'xWedge         ',&
                                                                       'yWedge         ',&
                                                                       'zWedge         ',&
-                                                                      'neuralSurface  ']
+                                                                      'neuralSurface  ',&
+                                                                      'bezierShape    ',&
+                                                                      'bezierTwist    ',&
+                                                                      'bezierVolume   ']
 
   ! Public interface
   public :: new_surface_ptr
@@ -111,6 +117,15 @@ contains
 
       case ('neuralSurface')
         allocate (neuralSurface :: new)
+        
+      case ('bezierShape')
+        allocate (bezierShape :: new)
+
+      case ('bezierTwist')
+        allocate (bezierTwist :: new)
+
+      case ('bezierVolume')
+        allocate (bezierVolume :: new)
 
       case default
         print '(A)' , ' AVAILABLE SURFACES: '

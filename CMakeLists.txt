@@ -38,7 +38,7 @@ file(MAKE_DIRECTORY ${CMAKE_Fortran_MODULE_DIRECTORY})
 # Add compilers flags
 # The flags set below will be applied to all Fortran files
 #
-set(CMAKE_Fortran_FLAGS "-std=f2008 -O3 -g -pedantic -Wall -Wno-unused-dummy-argument -cpp")
+set(CMAKE_Fortran_FLAGS "-std=f2008 -O3 -g -pedantic -Wall -Wno-unused-dummy-argument -cpp -march=native")
 
 # Add extra flags to all Fortran files
 if(COVERAGE)

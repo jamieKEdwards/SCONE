@@ -71,8 +71,11 @@ module eigenPhysicsPackage_class
   ! Visualisation
   use visualiser_class,               only : visualiser
 
-  ! Neural surface diagnostics
+  ! Neural surface diagnostics !!TO BE REMOVED!!
   use neuralSurface_class,            only : printNeuralDiagnostics
+  
+  ! Bezier diagnostics         !!TO BE REMOVED!!
+  use bezierVolume_class,             only : printBezierDiagnostics
 
   implicit none
   private
@@ -148,7 +151,10 @@ contains
 
     call self % cycles(self % inactiveTally, self % inactiveAtch, self % N_inactive)
     call self % cycles(self % activeTally, self % activeAtch, self % N_active)
+    call self % collectResults()
 
+    !! TO BE REMOVED !!
+    call printBezierDiagnostics()
     call printNeuralDiagnostics()
 
     ! Collect results from other processes
