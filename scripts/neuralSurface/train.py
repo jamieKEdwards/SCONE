@@ -15,6 +15,11 @@ Usage examples:
       --output /home/jamie/SCONE/weights/sphere_neural.bin --epochs 1000 \\
       --resume /home/jamie/SCONE/weights/sphere_neural_ep050.pt
 
+  # GPU training:
+  python train.py --sphere --radius 1.0 --n-samples 100000 \\
+      --output /home/jamie/SCONE/weights/sphere_neural.bin --epochs 1000 \\
+      --device cuda
+
   # Common overrides:
   python train.py --input shape.bin --output shape.bin \\
       --hidden-dim 64 --num-layers 3 --epochs 200 --lr 1e-3
@@ -48,6 +53,7 @@ from datetime import datetime
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from model   import NeuralSDF
@@ -117,31 +123,62 @@ def _write_crash_log(record):
 # Training loop
 # ---------------------------------------------------------------------------
 
+def _binary_loss(pred, sdfs, loss_mode, coords, grad_penalty, near_surface_tol):
+    """
+    Compute binary classification loss from tanh predictions and (possibly continuous) SDF labels.
+
+    Labels are derived as sign(sdfs), so the raw SDF values are also used for the near-surface
+    mask when grad_penalty > 0.  pred is shape (batch, 1); sdfs is shape (batch,).
+    """
+    labels = sdfs.squeeze(-1).sign()   # (batch,), ±1
+    p_flat = pred.squeeze(-1)          # (batch,)
+
+    if loss_mode == 'bce':
+        # Map tanh output and labels from [-1, 1] to [0, 1] for BCE
+        p_prob = (p_flat + 1) / 2
+        t_prob = (labels + 1) / 2
+        loss = F.binary_cross_entropy(p_prob.clamp(1e-7, 1 - 1e-7), t_prob)
+
+        if grad_penalty > 0.0 and coords.requires_grad:
+            near = sdfs.squeeze(-1).abs() < near_surface_tol
+            if near.any():
+                grad = torch.autograd.grad(pred.sum(), coords, create_graph=True)[0]
+                grad_norm = grad.norm(dim=1)
+                # Penalise small gradients near surface to maintain a sharp boundary
+                pen = (1.0 / (grad_norm[near] + 1e-8)).mean()
+                loss = loss + grad_penalty * pen
+
+    else:  # hinge
+        margin = 0.1
+        loss = F.relu(margin - labels * p_flat).mean()
+
+    return loss
+
+
 def train(model, train_loader, val_loader, epochs, lr, weight_decay, device, verbose,
           checkpoint_every=50, on_checkpoint=None, on_epoch=None,
           history=None, start_epoch=1, eta_min=0.0, use_scheduler=True,
-          clamp_delta=0.1, eikonal_weight=0.1, eikonal_scale=1.0):
+          clamp_delta=0.1, eikonal_weight=0.1, eikonal_scale=1.0,
+          loss_mode='l1', grad_penalty=0.0, near_surface_tol=0.5):
     """
-    Train model with Adam + clamped L1 loss + optional Eikonal regularisation.
+    Train model with Adam + configurable loss.
+
+    loss_mode='l1'   : clamped L1 + optional Eikonal (sdf mode, default)
+    loss_mode='bce'  : binary cross-entropy on sign(sdf); grad_penalty enables BIN-B
+    loss_mode='hinge': hinge loss with margin=0.1 (BIN-C)
 
     Args:
-        checkpoint_every : save a checkpoint every this many epochs (0 = disabled)
-        on_checkpoint    : callable(epoch, model, history_so_far) invoked after each
-                           checkpoint epoch; history_so_far covers start_epoch..epoch
-        on_epoch         : callable(epoch, model, train_loss, val_loss) called after
-                           every epoch. May raise _SigtermInterrupt to abort.
-        history          : list to append per-epoch records into. If None a fresh list
-                           is used. Pass in a list from the caller to read it after
-                           an exception (the reference stays valid through the raise).
-        start_epoch      : first epoch number (default 1; higher when resuming)
-        clamp_delta      : SDF clamping threshold (physical units). Loss is computed on
-                           clamp(pred, -δ, δ) vs clamp(gt, -δ, δ), concentrating gradient
-                           signal on the near-surface region. 0 = disabled.
-        eikonal_weight   : Weight λ for Eikonal regularisation term
-                           λ * mean(|∇f| - eikonal_scale)². 0 = disabled.
-        eikonal_scale    : Target gradient norm in normalised coordinates.
-                           For isotropic bbox of half-width h: eikonal_scale = h
-                           (physical Eikonal |∇f_phys|=1 → |∇f_norm|=h).
+        checkpoint_every  : save a checkpoint every this many epochs (0 = disabled)
+        on_checkpoint     : callable(epoch, model, history_so_far)
+        on_epoch          : callable(epoch, model, train_loss, val_loss)
+        history           : list to append per-epoch records into
+        start_epoch       : first epoch number (higher when resuming)
+        clamp_delta       : SDF clamping threshold (sdf mode only). 0 = disabled.
+        eikonal_weight    : Eikonal regularisation weight (sdf mode only). 0 = disabled.
+        eikonal_scale     : Target |∇f| in normalised coords (sdf mode only).
+        loss_mode         : 'l1', 'bce', or 'hinge'
+        grad_penalty      : Weight for gradient magnitude penalty in bce mode (BIN-B).
+        near_surface_tol  : Distance threshold for grad penalty near-surface mask.
 
     Returns:
         history : the same list that was appended to
@@ -160,8 +197,11 @@ def train(model, train_loader, val_loader, epochs, lr, weight_decay, device, ver
             last_epoch=start_epoch - 2 if start_epoch > 1 else -1
         )
 
-    use_eikonal = eikonal_weight > 0.0
-    use_clamp   = clamp_delta > 0.0
+    use_eikonal  = (loss_mode == 'l1') and eikonal_weight > 0.0
+    use_clamp    = (loss_mode == 'l1') and clamp_delta > 0.0
+    use_bin      = loss_mode in ('bce', 'hinge')
+    # Gradient computation needed for eikonal or grad_penalty
+    need_grads   = use_eikonal or (loss_mode == 'bce' and grad_penalty > 0.0)
 
     if history is None:
         history = []
@@ -175,8 +215,7 @@ def train(model, train_loader, val_loader, epochs, lr, weight_decay, device, ver
         for coords, sdfs in train_loader:
             sdfs = sdfs.to(device)
 
-            # Eikonal requires input gradients; enable before forward pass
-            if use_eikonal:
+            if need_grads:
                 coords = coords.to(device).requires_grad_(True)
             else:
                 coords = coords.to(device)
@@ -184,23 +223,27 @@ def train(model, train_loader, val_loader, epochs, lr, weight_decay, device, ver
             optimizer.zero_grad()
             pred = model(coords)
 
-            # Clamped SDF loss: focus gradient signal near the surface
-            if use_clamp:
-                sdf_loss = criterion(torch.clamp(pred, -clamp_delta, clamp_delta),
-                                     torch.clamp(sdfs,  -clamp_delta, clamp_delta))
+            if use_bin:
+                loss = _binary_loss(pred, sdfs, loss_mode, coords, grad_penalty, near_surface_tol)
+                sdf_loss = loss  # report as sdf_loss for status compatibility
             else:
-                sdf_loss = criterion(pred, sdfs)
+                # Clamped SDF loss: focus gradient signal near the surface
+                if use_clamp:
+                    sdf_loss = criterion(torch.clamp(pred, -clamp_delta, clamp_delta),
+                                         torch.clamp(sdfs,  -clamp_delta, clamp_delta))
+                else:
+                    sdf_loss = criterion(pred, sdfs)
 
-            # Eikonal regularisation: penalise |∇f| deviating from eikonal_scale
-            if use_eikonal:
-                grad = torch.autograd.grad(
-                    pred.sum(), coords, create_graph=True
-                )[0]
-                eik_loss = (grad.norm(dim=1) - eikonal_scale).pow(2).mean()
-                loss = sdf_loss + eikonal_weight * eik_loss
-                train_eik_loss += eik_loss.item() * len(coords)
-            else:
-                loss = sdf_loss
+                # Eikonal regularisation: penalise |∇f| deviating from eikonal_scale
+                if use_eikonal:
+                    grad = torch.autograd.grad(
+                        pred.sum(), coords, create_graph=True
+                    )[0]
+                    eik_loss = (grad.norm(dim=1) - eikonal_scale).pow(2).mean()
+                    loss = sdf_loss + eikonal_weight * eik_loss
+                    train_eik_loss += eik_loss.item() * len(coords)
+                else:
+                    loss = sdf_loss
 
             loss.backward()
             optimizer.step()
@@ -212,7 +255,7 @@ def train(model, train_loader, val_loader, epochs, lr, weight_decay, device, ver
         train_sdf_loss /= n_train
         train_eik_loss /= n_train
 
-        # --- Validation: SDF loss only (no eikonal, no grad tracking) ---
+        # --- Validation ---
         model.eval()
         val_loss = 0.0
         with torch.no_grad():
@@ -220,7 +263,12 @@ def train(model, train_loader, val_loader, epochs, lr, weight_decay, device, ver
                 coords = coords.to(device)
                 sdfs   = sdfs.to(device)
                 pred   = model(coords)
-                if use_clamp:
+                if use_bin:
+                    # Use same binary loss but without grad_penalty (no_grad context)
+                    val_loss += _binary_loss(
+                        pred, sdfs, loss_mode, coords, 0.0, near_surface_tol
+                    ).item() * len(coords)
+                elif use_clamp:
                     val_loss += criterion(
                         torch.clamp(pred, -clamp_delta, clamp_delta),
                         torch.clamp(sdfs,  -clamp_delta, clamp_delta)
@@ -307,6 +355,16 @@ def parse_args():
                         'λ·mean(|∇f|−target)² (default: 0.1). Set 0 to disable.')
     p.add_argument('--no-eikonal',   action='store_true',
                    help='Disable Eikonal regularisation entirely (equivalent to --eikonal-weight 0)')
+
+    p.add_argument('--mode', choices=['sdf', 'binary'], default='sdf',
+                   help='Training mode: sdf (default, clamped L1+eikonal) or binary (±1 labels)')
+    p.add_argument('--loss', choices=['bce', 'hinge'], default='bce',
+                   help='Loss for binary mode: bce (BIN-A/B) or hinge (BIN-C). Ignored in sdf mode.')
+    p.add_argument('--grad-penalty', type=float, default=0.0,
+                   help='Gradient magnitude penalty weight for BCE mode (BIN-B). 0=disabled (default).')
+    p.add_argument('--near-surface-tol', type=float, default=0.5,
+                   help='Distance threshold for near-surface mask used by --grad-penalty (default 0.5)')
+
     p.add_argument('--val-fraction', type=float, default=0.1)
     p.add_argument('--seed',         type=int,   default=42)
     p.add_argument('--float32',      action='store_true',
@@ -318,6 +376,9 @@ def parse_args():
                    help='Checkpoint directory (default: <SCONE_ROOT>/weights/)')
 
     p.add_argument('--quiet', action='store_true')
+
+    p.add_argument('--device', default='auto', choices=['auto', 'cpu', 'cuda'],
+                   help='Training device: auto (default), cpu, or cuda')
 
     return p.parse_args()
 
@@ -335,7 +396,10 @@ def main():
         sys.exit(1)
 
     torch.manual_seed(args.seed)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if args.device == 'auto':
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    else:
+        device = torch.device(args.device)
     if verbose:
         print(f"Device: {device}", flush=True)
 
@@ -437,10 +501,11 @@ def main():
         train_ds.dataset.coords = train_ds.dataset.coords.float()
         train_ds.dataset.sdfs   = train_ds.dataset.sdfs.float()
 
+    pin = device.type == 'cuda'
     train_loader = DataLoader(train_ds, batch_size=args.batch_size,
-                              shuffle=True,  num_workers=0, pin_memory=False)
+                              shuffle=True,  num_workers=0, pin_memory=pin)
     val_loader   = DataLoader(val_ds,   batch_size=args.batch_size,
-                              shuffle=False, num_workers=0, pin_memory=False)
+                              shuffle=False, num_workers=0, pin_memory=pin)
 
     if verbose:
         print(f"  Train: {len(train_ds):,}  Val: {len(val_ds):,}")
@@ -455,8 +520,12 @@ def main():
     if dtype == torch.float64:
         model = model.double()
 
-    sdf_abs_max = float(np.abs(sdfs).max())
-    model.set_sdf_scale(sdf_abs_max * 1.05)
+    if args.mode == 'binary':
+        # Binary labels are ±1; tanh output is already in [-1, 1] so scale = 1.
+        model.set_sdf_scale(1.0)
+    else:
+        sdf_abs_max = float(np.abs(sdfs).max())
+        model.set_sdf_scale(sdf_abs_max * 1.05)
 
     if resume_ckpt is not None:
         model.load_state_dict(resume_ckpt['model_state_dict'])
@@ -622,27 +691,35 @@ def main():
     # Train
     # ------------------------------------------------------------------
     if verbose:
+        mode_str = args.mode
+        if args.mode == 'binary':
+            mode_str += f'/{args.loss}'
+            if args.grad_penalty > 0:
+                mode_str += f'+gradpen({args.grad_penalty})'
         print(f"\nTraining epochs {start_epoch}–{args.epochs}  "
-              f"(lr={args.lr}, wd={args.weight_decay}, "
+              f"(mode={mode_str}, lr={args.lr}, wd={args.weight_decay}, "
               f"checkpoint every {args.checkpoint_every} epochs)...")
 
     try:
         history = train(train_model, train_loader, val_loader,
-                        epochs           = args.epochs,
-                        lr               = args.lr,
-                        weight_decay     = args.weight_decay,
-                        device           = device,
-                        verbose          = verbose,
-                        checkpoint_every = args.checkpoint_every,
-                        on_checkpoint    = on_checkpoint_cb,
-                        on_epoch         = on_epoch,
-                        history          = new_history,
-                        start_epoch      = start_epoch,
-                        eta_min          = args.eta_min,
-                        use_scheduler    = not args.no_scheduler,
-                        clamp_delta      = args.clamp_delta,
-                        eikonal_weight   = eikonal_weight,
-                        eikonal_scale    = eikonal_scale)
+                        epochs            = args.epochs,
+                        lr                = args.lr,
+                        weight_decay      = args.weight_decay,
+                        device            = device,
+                        verbose           = verbose,
+                        checkpoint_every  = args.checkpoint_every,
+                        on_checkpoint     = on_checkpoint_cb,
+                        on_epoch          = on_epoch,
+                        history           = new_history,
+                        start_epoch       = start_epoch,
+                        eta_min           = args.eta_min,
+                        use_scheduler     = not args.no_scheduler,
+                        clamp_delta       = args.clamp_delta,
+                        eikonal_weight    = eikonal_weight,
+                        eikonal_scale     = eikonal_scale,
+                        loss_mode         = args.loss if args.mode == 'binary' else 'l1',
+                        grad_penalty      = args.grad_penalty,
+                        near_surface_tol  = args.near_surface_tol)
 
     except _SigtermInterrupt:
         # Emergency checkpoint already saved inside on_epoch.
