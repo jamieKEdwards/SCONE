@@ -1,12 +1,19 @@
 module bezierShape_class
 
   use numPrecision
-  use universalVariables, only : X_AXIS, Y_AXIS, Z_AXIS, INF, SURF_TOL
+  use universalVariables, only : X_AXIS, Y_AXIS, Z_AXIS, INF, SURF_TOL, NUDGE
   use genericProcedures,  only : fatalError, dotProduct, numToChar
   use dictionary_class,   only : dictionary
   use surface_inter,      only : surface, kill_super => kill
   implicit none
   private
+
+  integer(shortInt), parameter, private :: SHAPE_DIAG_UNIT = 96
+  integer(longInt),  save, public       :: bezierShape_nCalls    = 0_longInt
+  integer(longInt),  save, public       :: bezierShape_nMisclass = 0_longInt
+  logical(defBool),  save, private      :: shapeDiagFileOpen = .false.
+
+  public :: printBezierShapeDiagnostics
 
   !!
   !!
@@ -26,11 +33,21 @@ module bezierShape_class
   !! Surface tolerance: SURF_TOL
   !! Nudge: NUDGE
   !!
-  !! Sample dictionary input:
-  !!  pl { type bezierShape; id 16; order 3; ctrlPts   (1.0, 2.0, 3.0, 1.0, 2.0, 3.0, 1.0, 2.0, 3.0, 1.0, 2.0, 3.0,
-  !!                                                    1.0, 2.0, 3.0, 1.0, 2.0, 3.0, 1.0, 2.0, 3.0, 1.0, 2.0, 3.0,
-  !!                                                    1.0, 2.0, 3.0, 1.0, 2.0, 3.0, 1.0, 2.0, 3.0, 1.0, 2.0, 3.0);
-  !!      }
+  !! Sample dictionary input (non-rational, existing inputs unchanged):
+  !!  bl { type bezierShape; id 99; order 3; ctrlPts (
+  !!         0.9 3 0  0.9 4.2 0  -0.9 4.2 0  -0.9 3 0 ... ); }
+  !!
+  !! Sample dictionary input (rational, exact unit circle from 4 cubic arcs):
+  !!  circ { type bezierShape; id 99; order 3; ctrlPts (
+  !!         1.0  0.0       0.0    1.0  0.58579  0.0    0.58579  1.0  0.0    0.0  1.0  0.0
+  !!         0.0  1.0       0.0   -0.58579  1.0  0.0   -1.0  0.58579  0.0   -1.0  0.0  0.0
+  !!        -1.0  0.0       0.0   -1.0 -0.58579  0.0   -0.58579 -1.0  0.0    0.0 -1.0  0.0
+  !!         0.0 -1.0       0.0    0.58579 -1.0  0.0    1.0 -0.58579  0.0    1.0  0.0  0.0 );
+  !!       weights (
+  !!         1.0 0.80474 0.80474 1.0
+  !!         1.0 0.80474 0.80474 1.0
+  !!         1.0 0.80474 0.80474 1.0
+  !!         1.0 0.80474 0.80474 1.0 ); }
   !!
   !! Private members:
   !!   norm -> Normal vector (normalised) [c1, c2, c3]
@@ -44,8 +61,11 @@ module bezierShape_class
     real(defReal), dimension(3)                     :: norm = ZERO
     real(defReal)                                   :: offset = ZERO
     real(defReal), dimension(:, :, :), allocatable  :: ctrlPts
+    real(defReal), dimension(:, :),   allocatable   :: weights
     integer(shortInt)                               :: numCurves = 0
     integer(shortInt)                               :: order = 0
+    real(defReal)                                   :: diagRefR2   = ZERO
+    logical(defBool)                                :: diagEnabled = .false.
   contains
     ! Superclass procedures
     procedure :: myType
@@ -95,42 +115,59 @@ contains
     class(dictionary), intent(in)            :: dict
     integer(shortInt)                        :: id, n, m, i, j, k, order
     real(defReal), dimension(:), allocatable :: ctrlPtsList
+    real(defReal), dimension(:), allocatable :: weightsList
     character(100), parameter :: Here = 'init (bezierShape_class.f90)'
 
-    ! Get from dictionary
     call dict % get(id, 'id')
-    call dict % get(ctrlPtsList,'ctrlPts')
-    call dict % get(order,'order')
-    
-    n = size(ctrlPtsList)    
-    self % order = order
+    call dict % get(ctrlPtsList, 'ctrlPts')
+    call dict % get(order, 'order')
+
+    n = size(ctrlPtsList)
+    self % order     = order
     self % numCurves = (n / 3) / (self % order + 1)
 
-    
+    if (id < 1) call fatalError(Here, 'Invalid surface id provided. ID must be > 1')
 
-
-    ! Check values
-    if (id < 1) then
-      call fatalError(Here,'Invalid surface id provided. ID must be > 1')
-    end if
-
-    ! Load data
     call self % setID(id)
-    
-    ! Unpack points and fill array of correct dimensions
-    allocate(self % ctrlPts(self % numCurves, self % order + 1, 3))
 
-    m=1
-    do while (m<=n) 
-      do i=1, self % numCurves
-        do j=1, self % order + 1
-          do k=1, 3
-            self % ctrlPts(i, j, k) = ctrlPtsList(m)
-            m = m + 1
-          end do 
+    ! Unpack control points into (numCurves, order+1, 3)
+    allocate(self % ctrlPts(self % numCurves, self % order + 1, 3))
+    m = 1
+    do i = 1, self % numCurves
+      do j = 1, self % order + 1
+        do k = 1, 3
+          self % ctrlPts(i, j, k) = ctrlPtsList(m)
+          m = m + 1
         end do
       end do
     end do
+
+    ! Weights are optional — default 1.0 gives standard non-rational Bezier
+    allocate(self % weights(self % numCurves, self % order + 1))
+    if (dict % isPresent('weights')) then
+      call dict % get(weightsList, 'weights')
+      m = 1
+      do i = 1, self % numCurves
+        do j = 1, self % order + 1
+          self % weights(i, j) = weightsList(m)
+          m = m + 1
+        end do
+      end do
+    else
+      self % weights = ONE
+    end if
+
+    ! Optional analytic circle diagnostic: compare halfspace against r^2 = diagRadius^2
+    if (dict % isPresent('diagRadius')) then
+      call dict % get(self % diagRefR2, 'diagRadius')
+      self % diagRefR2   = self % diagRefR2 * self % diagRefR2
+      self % diagEnabled = .true.
+      if (.not. shapeDiagFileOpen) then
+        open(unit=SHAPE_DIAG_UNIT, file='bezierShape_misclass.dat', status='replace', action='write')
+        write(SHAPE_DIAG_UNIT, '(A)') '# x  y  z  bezierShape_inside  circle_inside'
+        shapeDiagFileOpen = .true.
+      end if
+    end if
 
   end subroutine init
 
@@ -245,97 +282,119 @@ contains
     real(defReal), dimension(self % order + 1, 3)                     :: curve
     real(defReal), dimension(self % order + 1, 3)                     :: Q
     real(defReal), dimension(self % order + 1, 3)                     :: S
+    real(defReal), dimension(self % order + 1)                        :: curveW, wQ, wS
     real(defReal), dimension((self % order + 1) * (self % numCurves + 50), 3)       :: inner
     real(defReal), dimension((self % order + 1) * (self % numCurves + 50), 3)       :: outer
     real(defReal), dimension(self % numCurves + 50, self % order + 1, 3)  :: lastCtrlPts
     real(defReal), dimension(self % numCurves + 50, self % order + 1, 3)  :: newCtrlPts
+    real(defReal), dimension(self % numCurves + 50, self % order + 1)     :: lastWeights
+    real(defReal), dimension(self % numCurves + 50, self % order + 1)     :: newWeights
     integer(shortInt)                                                 :: counter, i, j, m, n
+    logical(defBool)                                                  :: classified
 
     r_temp = r
 
-    !print*, 'checking halfspace'
-
-    ! Keep compiler happy (in immpossible case of cell with no surfaces)
     hs = .false.
-    
-    ! Count number of subdivisions
+    classified = .false.
+
     counter = 0
     n = 0
     m = 0
 
-    ! Start with normal control points
     lastCtrlPts = self % ctrlPts
     newCtrlPts = 0
 
-    ! parametic subdivision point t
+    lastWeights = ONE
+    lastWeights(1:self % numCurves, :) = self % weights
+    newWeights = ONE
+
     t = 0.5
 
     main: do while (counter < 50)
 
-      
-      
-
-      
-
-      ! First calculate inner and outer paths within/around the bezier surfaces
       call self % findInnerOuterPaths(lastCtrlPts, inner, outer, counter, n, m)
-
 
       if (self % inOrOut(inner, n, r_temp)) then
         hs = .true.
-        return
-        
+        classified = .true.
+        exit main
+
       elseif ( .not. self % inOrOut(outer, m, r_temp)) then
         hs = .false.
-        return
-      
+        classified = .true.
+        exit main
+
       else
 
         do i = 1, self % numCurves + counter
-          
-          curve = lastCtrlPts(i, :, :)
-          
-          call self % order3Hull(curve)
-  
+
+          curve  = lastCtrlPts(i, :, :)
+          curveW = lastWeights(i, :)
+
+          if (self % order == 3) call self % order3Hull(curve)
+
           if (self % inConvexPoly(curve, r_temp)) then
             counter = counter + 1
-            
-            ! Subdivide curve at parametric point of t = 0.5
-            call self % subdivide(curve, t, Q, S)
-  
-            ! Make new temp ctrl pts array - shuffle array along and make room for subdivided curve
+
+            call self % subdivide(curve, curveW, t, Q, S, wQ, wS)
+
             do j = 1, self % numCurves + counter
               if (j < i) then
-                newCtrlPts(j, :, :) = lastCtrlPts(j, :, :)
-              else if (j==i) then
-                newCtrlPts(j, :, :) = Q(:, :)
-              else if ( j == i + 1) then
-                newCtrlPts(j, :, :) = S(:, :)
+                newCtrlPts(j, :, :)  = lastCtrlPts(j, :, :)
+                newWeights(j, :)     = lastWeights(j, :)
+              else if (j == i) then
+                newCtrlPts(j, :, :)  = Q(:, :)
+                newWeights(j, :)     = wQ
+              else if (j == i + 1) then
+                newCtrlPts(j, :, :)  = S(:, :)
+                newWeights(j, :)     = wS
               else
-                newCtrlPts(j, :, :) = lastCtrlPts(j-1, :, :)
-              end if   
+                newCtrlPts(j, :, :)  = lastCtrlPts(j-1, :, :)
+                newWeights(j, :)     = lastWeights(j-1, :)
+              end if
             end do
-  
+
             lastCtrlPts = newCtrlPts
-            
-  
-            ! go back to start of outside loop
+            lastWeights = newWeights
+
             cycle main
-          end if   
+          end if
         end do
-        
-      
-        ! Particle stuck and not found in any polygon
-        ! Give particle nudge to set it on it's way
-        r_temp = r_temp + (surf_tol * 10)
-      
-      
-      end if 
+
+        ! Particle not in any arc convex hull — exit and apply nudge below
+        exit main
+
+      end if
 
     end do main
 
+    ! Last-resort nudge for particles stuck at arc junctions after max subdivisions.
+    ! Only fires when subdivisions exhausted or no arc hull contained the particle.
+    if (.not. classified) then
+      r_temp = r_temp + NUDGE * u
+      call self % findInnerOuterPaths(lastCtrlPts, inner, outer, counter, n, m)
+      if (self % inOrOut(inner, n, r_temp)) then
+        hs = .true.
+      elseif (.not. self % inOrOut(outer, m, r_temp)) then
+        hs = .false.
+      end if
+    end if
 
-
+    ! Analytic circle diagnostic: compare bezierShape result against x^2+y^2 < R^2
+    if (self % diagEnabled) then
+      !$omp atomic
+      bezierShape_nCalls = bezierShape_nCalls + 1_longInt
+      if (hs .neqv. ((r(1)*r(1) + r(2)*r(2)) < self % diagRefR2)) then
+        !$omp atomic
+        bezierShape_nMisclass = bezierShape_nMisclass + 1_longInt
+        if (shapeDiagFileOpen) then
+          !$omp critical(bezierShapeDiag)
+          write(SHAPE_DIAG_UNIT, '(3ES16.8, 2L3)') r(1), r(2), r(3), hs, &
+                                                    ((r(1)*r(1)+r(2)*r(2)) < self % diagRefR2)
+          !$omp end critical(bezierShapeDiag)
+        end if
+      end if
+    end if
 
   end function halfspace
 
@@ -351,28 +410,51 @@ contains
   !! Uses De Casteljau’s Subdivision Algorithm with parametric 
   !! division point of t. Q is the LHS curve after split, and R is RHS curve
   !!
-  subroutine subdivide(self, curve, t, Q, R)
+  !!
+  !! Subdivide a rational Bezier curve at parameter t using homogeneous De Casteljau.
+  !!
+  !! Works for any order. When curveW is all ones this is identical to the polynomial case.
+  !! Q is the left sub-curve [0,t], R is the right sub-curve [t,1].
+  !!
+  subroutine subdivide(self, curve, curveW, t, Q, R, wQ, wR)
     class(bezierShape), intent(in)                               :: self
+    real(defReal), dimension(self % order + 1, 3), intent(in)    :: curve
+    real(defReal), dimension(self % order + 1),    intent(in)    :: curveW
+    real(defReal), intent(in)                                    :: t
     real(defReal), dimension(self % order + 1, 3), intent(out)   :: Q
     real(defReal), dimension(self % order + 1, 3), intent(out)   :: R
-    real(defReal), dimension(self % order + 1, 3), intent(in)    :: curve
-    real(defReal), intent(in)                                    :: t
-    real(defReal), dimension(3)                                  :: X  
-    
-    ! start and end points
-    R(self % order + 1, :) = curve(self % order + 1, :)
-    Q(1, :)                = curve(1, :) 
+    real(defReal), dimension(self % order + 1),    intent(out)   :: wQ
+    real(defReal), dimension(self % order + 1),    intent(out)   :: wR
+    ! Homogeneous control points: H(level, index, coord) where coord 4 = weight
+    real(defReal), dimension(0:self%order, 0:self%order, 4)      :: H
+    integer(shortInt)                                            :: n, k, i
 
-    ! X is the intermediattary point - not in either subdivided curve. 
-    X    = (1-t) * curve(2, :) + t * curve(3, :) 
-    R(3, :) = (1-t) * curve(3, :) + t * curve(4, :)
-    Q(2, :) = (1-t) * curve(1, :) + t * curve(2, :)
-    
-    R(2, :) = (1-t) * X + t * R(3, :)
-    Q(3, :) = (1-t) * Q(2, :) + t * X
+    n = self % order
 
-    R(1, :) = (1-t) * Q(3, :) + t * R(2, :)
-    Q(4, :) = (1-t) * Q(3, :) + t * R(2, :)
+    ! Lift to homogeneous coordinates: (w*x, w*y, w*z, w)
+    do i = 0, n
+      H(0, i, 1:3) = curveW(i+1) * curve(i+1, :)
+      H(0, i, 4)   = curveW(i+1)
+    end do
+
+    ! De Casteljau iterations in homogeneous space
+    do k = 1, n
+      do i = 0, n - k
+        H(k, i, :) = (ONE - t) * H(k-1, i, :) + t * H(k-1, i+1, :)
+      end do
+    end do
+
+    ! Left sub-curve Q: first column H(k, 0), k = 0..n
+    do k = 0, n
+      wQ(k+1)    = H(k, 0, 4)
+      Q(k+1, :)  = H(k, 0, 1:3) / wQ(k+1)
+    end do
+
+    ! Right sub-curve R: anti-diagonal H(n-k, k), k = 0..n
+    do k = 0, n
+      wR(k+1)    = H(n-k, k, 4)
+      R(k+1, :)  = H(n-k, k, 1:3) / wR(k+1)
+    end do
 
   end subroutine subdivide
 
@@ -744,13 +826,43 @@ contains
   elemental subroutine kill(self)
     class(bezierShape), intent(inout) :: self
 
-    ! Superclass
     call kill_super(self)
 
-    ! Local
-    self % norm = ZERO
+    self % norm   = ZERO
     self % offset = ZERO
+    if (allocated(self % ctrlPts)) deallocate(self % ctrlPts)
+    if (allocated(self % weights)) deallocate(self % weights)
+    self % numCurves = 0
+    self % order     = 0
 
   end subroutine kill
+
+  !!
+  !! Print bezierShape misclassification diagnostic summary
+  !!
+  subroutine printBezierShapeDiagnostics()
+    real(defReal) :: pct
+
+    if (bezierShape_nCalls == 0_longInt) return
+
+    pct = 100.0_defReal * real(bezierShape_nMisclass, defReal) / real(bezierShape_nCalls, defReal)
+
+    print '(A)', ''
+    print '(A)', '--- bezierShape Halfspace Diagnostic ---'
+    print '(A,I0)', '  Total halfspace calls : ', bezierShape_nCalls
+    print '(A,I0)', '  Misclassified calls   : ', bezierShape_nMisclass
+    print '(A,F8.4,A)', '  Misclassification rate: ', pct, ' %'
+    if (shapeDiagFileOpen) then
+      print '(A)', '  Details written to: bezierShape_misclass.dat'
+      write(SHAPE_DIAG_UNIT, '(A)')       '# ---- Summary ----'
+      write(SHAPE_DIAG_UNIT, '(A,I0)')    '# Total calls:   ', bezierShape_nCalls
+      write(SHAPE_DIAG_UNIT, '(A,I0)')    '# Misclassified: ', bezierShape_nMisclass
+      write(SHAPE_DIAG_UNIT, '(A,F8.4,A)') '# Rate:          ', pct, ' %'
+      close(SHAPE_DIAG_UNIT)
+      shapeDiagFileOpen = .false.
+    end if
+    print '(A)', '----------------------------------------'
+
+  end subroutine printBezierShapeDiagnostics
 
 end module bezierShape_class

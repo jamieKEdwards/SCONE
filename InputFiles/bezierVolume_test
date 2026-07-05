@@ -31,6 +31,7 @@ geometry {
         type bezierVolume;
         id 2;
         numPatches 8;
+        diagRadius 1.5;
         ctrlPts (
           // ---- Patch 1: +x +y +z octant ----
           // Row 1: collapsed to north pole (0,0,1.5)

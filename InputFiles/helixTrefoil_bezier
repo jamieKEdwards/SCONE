@@ -1,0 +1,146 @@
+!! Reference eigenvalue run — 3D helical trefoil with bezierTwist surface
+!!
+!! The helix completes one full 360-degree rotation over 20 cm (z = -10 to +10).
+!! Same cross-section control points as the 2D trefoil benchmark.
+!!
+!! Sign convention: bezierTwist halfspace returns TRUE (positive) = INSIDE.
+!!   cell surfaces(+bt)  = inside helix = fuel
+!!   cell surfaces(-bt)  = outside helix = water
+!!
+!! Use delta tracking throughout for a fair comparison with the neural run.
+!!
+!! Run: ./Build/scone.out InputFiles/helixTrefoil_bezier --omp $(nproc)
+
+type eigenPhysicsPackage;
+
+pop      100000;
+active   300;
+inactive 50;
+XSdata   ce;
+dataType ce;
+outputFile helixTrefoil_bezier;
+outputFormat asciiJSON;
+
+collisionOperator { neutronCE { type neutronCEstd; } }
+
+transportOperator { type transportOperatorDT; }
+
+inactiveTally {}
+
+activeTally {
+  display (k_eff);
+  norm fiss;
+  normVal 100.0;
+  k_eff { type keffAnalogClerk; }
+
+  fiss { type collisionClerk; response (fiss); fiss { type macroResponse; MT -6; } }
+
+  fluxSpectrum { type collisionClerk;
+    map { type energyMap; grid log; min 1.0E-11; max 20.0; N 1000; }
+    response (flux);
+    flux { type fluxResponse; }
+  }
+
+  fissMapXY { type collisionClerk;
+    map { type multiMap; maps (mapX mapY);
+         mapX { type spaceMap; axis x; grid lin; min -5.0; max 5.0; N 100; }
+         mapY { type spaceMap; axis y; grid lin; min -5.0; max 5.0; N 100; }
+         }
+    response (fission);
+    fission { type macroResponse; MT -6; }
+  }
+
+  fissMapXZ { type collisionClerk;
+    map { type multiMap; maps (mapX mapZ);
+         mapX { type spaceMap; axis x; grid lin; min -5.0; max 5.0; N 100; }
+         mapZ { type spaceMap; axis z; grid lin; min -10.0; max 10.0; N 100; }
+         }
+    response (fission);
+    fission { type macroResponse; MT -6; }
+  }
+
+  fissMap3D { type collisionClerk;
+    map { type multiMap; maps (mapX mapY mapZ);
+         mapX { type spaceMap; axis x; grid lin; min -5.0; max 5.0; N 30; }
+         mapY { type spaceMap; axis y; grid lin; min -5.0; max 5.0; N 30; }
+         mapZ { type spaceMap; axis z; grid lin; min -10.0; max 10.0; N 40; }
+         }
+    response (fission);
+    fission { type macroResponse; MT -6; }
+  }
+}
+
+geometry {
+  type geometryStd;
+  boundary (1 1 1 1 1 1);
+  graph { type shrunk; }
+
+  surfaces {
+    outerBox { id 1; type box; origin (0.0 0.0 0.0); halfwidth (5.5 5.5 10.0); }
+
+    helix { id 2; type bezierTwist; order 3;
+            minZ -10.0; maxZ 10.0; twist 20.0;
+            ctrlPts (
+               0.9          3.0          0.0
+               0.9          4.2          0.0
+              -0.9          4.2          0.0
+              -0.9          3.0          0.0
+              -0.9          3.0          0.0
+              -0.9          1.2          0.0
+              -1.48923048   0.17942286   0.0
+              -3.0480762   -0.72057714   0.0
+              -3.0480762   -0.72057714   0.0
+              -4.08730671  -1.32057714   0.0
+              -3.18730671  -2.87942286   0.0
+              -2.1480762   -2.27942286   0.0
+              -2.1480762   -2.27942286   0.0
+              -0.58923048  -1.37942286   0.0
+               0.58923048  -1.37942286   0.0
+               2.1480762   -2.27942286   0.0
+               2.1480762   -2.27942286   0.0
+               3.18730671  -2.87942286   0.0
+               4.08730671  -1.32057714   0.0
+               3.0480762   -0.72057714   0.0
+               3.0480762   -0.72057714   0.0
+               1.48923048   0.17942286   0.0
+               0.9          1.2          0.0
+               0.9          3.0          0.0
+            ); }
+  }
+
+  cells {
+    fuel  { type simpleCell; id 10; surfaces (2);  filltype mat; material fuel;  }
+    water { type simpleCell; id 11; surfaces (-2); filltype mat; material water; }
+  }
+
+  universes {
+    root { id 1; type rootUniverse; border 1; fill u<2>; }
+    uni  { id 2; type cellUniverse; cells (10 11); }
+  }
+}
+
+nuclearData {
+  handles {
+    ce { type aceNeutronDatabase; aceLibrary /home/jamie/nuclearData/XSdata_jeff311/jeff311.aceXS; }
+  }
+  materials {
+    numberOfGroups 69;
+
+    water {
+      temp 99;
+      composition {
+        1001.06    4.7240E-02;
+        8016.06    2.3620E-02;
+      }
+    }
+
+    fuel {
+      temp 99;
+      composition {
+        92235.12    3.0000E-04;
+        92238.12    2.0000E-02;
+         8016.12    4.5100E-02;
+      }
+    }
+  }
+}

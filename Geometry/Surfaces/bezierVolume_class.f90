@@ -8,71 +8,68 @@ module bezierVolume_class
   implicit none
   private
 
-  ! Module-level counter for particles exceeding subdivision limit
+  ! Counter for particles that hit the subdivision limit
   integer(shortInt), public :: bezierVolumeExceededCount = 0
 
-  ! Maximum subdivision levels (safety limit — loop exits naturally via GJK convergence)
+  ! Safety limit on subdivision depth per halfspace call
   integer(shortInt), parameter :: MAX_SUBDIVISIONS = 10
 
-  ! GJK tolerance for floating-point comparisons
-  real(defReal), parameter     :: GJK_EPS = 1.0E-12_defReal
+  ! GJK tolerance
+  real(defReal), parameter :: GJK_EPS = 1.0E-12_defReal
 
-  ! ---- Diagnostic: analytical sphere comparison ----
-  integer(shortInt), parameter  :: DIAG_UNIT = 98
-  integer(shortInt), save       :: diagTotal = 0
-  integer(shortInt), save       :: diagMisclass = 0
-  logical(defBool), save        :: diagFileOpen = .false.
+  ! Diagnostic: analytical sphere comparison
+  integer(shortInt), parameter :: DIAG_UNIT     = 98
+  integer(shortInt), save      :: diagTotal     = 0
+  integer(shortInt), save      :: diagMisclass  = 0
+  logical(defBool), save       :: diagFileOpen  = .false.
 
   public :: printBezierDiagnostics
 
   !!
-  !! 3D Bezier volume surface defined by a watertight set of bicubic Bezier patches
+  !! 3D Bezier volume surface defined by a watertight set of bicubic Bezier patches.
   !!
-  !! Each patch is defined by a 4x4 grid of control points. The patches must be
-  !! joined at edges in a watertight manner (shared edge control points between
-  !! adjacent patches).
+  !! Each patch is a 4x4 grid of control points. Adjacent patches must share their
+  !! boundary control points exactly (watertight input mesh).
   !!
-  !! The halfspace algorithm works as follows:
-  !!   1. AABB test: if point is outside the axis-aligned bounding box -> outside
-  !!   2. Global convex hull test via GJK on all control points -> outside
-  !!   3. Per-patch convex hull test with uniform subdivision:
-  !!      - For each patch, AABB pre-filter then GJK convex hull test on its
-  !!        16 control points
-  !!      - If inside any patch hull, subdivide ALL patches uniformly (watertight)
-  !!      - Repeat until no patch hull contains the point
-  !!   4. Ray cast against the current (watertight) corner-point mesh using
-  !!      Moller-Trumbore with diverse ray directions for robustness
+  !! Halfspace algorithm:
+  !!   1. AABB rejection: outside bounding box -> outside
+  !!   2. Global GJK rejection: outside convex hull of all control points -> outside
+  !!   3. Selective subdivision: only subdivide patches whose GJK hull contains the
+  !!      query point. Track which original patches were subdivided.
+  !!   4. Build watertight triangle mesh:
+  !!      - Subdivided patches: use corner triangles of all their sub-patches.
+  !!      - Unsubdivided patches: use the standard 2 corner triangles, but for any
+  !!        edge adjacent to a subdivided patch, insert the De Casteljau midpoint of
+  !!        that boundary edge as a T-junction vertex (splitting the affected triangle
+  !!        into 2 or 3 triangles). This closes gaps where subdivision ends.
+  !!   5. Ray cast against the resulting watertight triangle mesh (Woop et al. 2013).
   !!
-  !! Control points are inputted as a flat list in order:
-  !!   patch1(point(1,1) point(1,2) ... point(4,4)) patch2(...) ...
-  !! where each point is (x, y, z)
+  !! Patch adjacency is precomputed at init by matching shared boundary control points.
   !!
-  !! Surface tolerance: SURF_TOL
+  !! Edges of each patch (indices for adj array):
+  !!   1 = u=0 boundary: row j=1, varying in v (C00 to C01)
+  !!   2 = u=1 boundary: row j=4, varying in v (C10 to C11)
+  !!   3 = v=0 boundary: col k=1, varying in u (C00 to C10)
+  !!   4 = v=1 boundary: col k=4, varying in u (C01 to C11)
   !!
-  !! Sample dictionary input:
-  !!  vol { type bezierVolume; id 1; numPatches 6; ctrlPts (x y z  x y z ... ); }
-  !!
-  !! Private members:
-  !!   ctrlPts        -> Control points array (numPatches, 4, 4, 3)
-  !!   numPatches     -> Number of Bezier patches
-  !!   allPtsFlat     -> All control points as (N, 3) for global GJK test
-  !!   nAllPts        -> Number of points in allPtsFlat
-  !!   aabb           -> Cached axis-aligned bounding box (6)
-  !!
-  !! Interface:
-  !!   surface interface
+  !! Sample input:
+  !!   vol { type bezierVolume; id 1; numPatches 6; ctrlPts (x y z ...); }
   !!
   type, public, extends(surface) :: bezierVolume
     private
-    real(defReal), dimension(:,:,:,:), allocatable :: ctrlPts
-    integer(shortInt)                              :: numPatches     = 0
-    ! All control points stored as (N, 3) for global GJK convex hull test
-    real(defReal), dimension(:,:), allocatable     :: allPtsFlat
-    integer(shortInt)                              :: nAllPts        = 0
-    ! Cached AABB
-    real(defReal), dimension(6)                    :: aabb = ZERO
+    real(defReal), dimension(:,:,:,:), allocatable :: ctrlPts      ! (numPatches, 4, 4, 3)
+    integer(shortInt)                              :: numPatches = 0
+    real(defReal), dimension(:,:), allocatable     :: allPtsFlat   ! (nAllPts, 3) for global GJK
+    integer(shortInt)                              :: nAllPts    = 0
+    real(defReal), dimension(6)                    :: aabb       = ZERO
+    ! adj(i,e)     = index of patch sharing edge e of patch i; -1 if none
+    ! adjEdge(i,e) = edge index on that adjacent patch; -1 if none
+    integer(shortInt), dimension(:,:), allocatable :: adj
+    integer(shortInt), dimension(:,:), allocatable :: adjEdge
+    real(defReal), dimension(:,:,:), allocatable   :: weights      ! (numPatches, 4, 4)
+    logical(defBool) :: doDiag = .false.
+    real(defReal)    :: diagR2 = ZERO                              ! diagRadius^2; 0 = disabled
   contains
-    ! Superclass procedures
     procedure :: myType
     procedure :: init
     procedure :: boundingBox
@@ -81,70 +78,50 @@ module bezierVolume_class
     procedure :: going
     procedure :: kill
     procedure :: halfspace
-    ! Internal procedures
     procedure :: inPatchAABB
     procedure :: rayCast
     procedure :: rayCastDebug
     procedure :: rayTriangle
+    procedure :: buildAdjacency
   end type bezierVolume
 
 
 contains
 
-  !!
-  !! Return surface type name
-  !!
-  !! See surface_inter for more details
-  !!
+  ! ---------------------------------------------------------------------------
+  ! Surface interface routines
+  ! ---------------------------------------------------------------------------
+
   pure function myType(self) result(str)
     class(bezierVolume), intent(in) :: self
     character(:), allocatable       :: str
-
     str = 'bezierVolume'
-
   end function myType
 
-  !!
-  !! Initialise bezierVolume from a dictionary
-  !!
-  !! See surface_inter for more details
-  !!
-  !! Errors:
-  !!   fatalError if id < 1
-  !!   fatalError if number of control points is inconsistent with numPatches
-  !!
   subroutine init(self, dict)
     class(bezierVolume), intent(inout)       :: self
     class(dictionary), intent(in)            :: dict
     integer(shortInt)                        :: id, n, m, i, j, k, l
-    real(defReal), dimension(:), allocatable :: ctrlPtsList
+    real(defReal), dimension(:), allocatable :: ctrlPtsList, weightsList
     character(100), parameter :: Here = 'init (bezierVolume_class.f90)'
 
-    ! Get from dictionary
-    call dict % get(id, 'id')
-    call dict % get(ctrlPtsList, 'ctrlPts')
+    call dict % get(id,              'id')
+    call dict % get(ctrlPtsList,     'ctrlPts')
     call dict % get(self % numPatches, 'numPatches')
 
-    ! Check values
-    if (id < 1) then
-      call fatalError(Here, 'Invalid surface id provided. ID must be >= 1')
-    end if
+    if (id < 1) call fatalError(Here, 'Invalid surface id. Must be >= 1')
 
     n = size(ctrlPtsList)
-
-    ! Each patch has 4x4 = 16 control points, each with 3 coordinates
     if (n /= self % numPatches * 16 * 3) then
-      call fatalError(Here, 'Number of control points inconsistent with numPatches. '// &
+      call fatalError(Here, 'Control points inconsistent with numPatches. '// &
                             'Expected: '//numToChar(self % numPatches * 16 * 3)// &
                             ' Got: '//numToChar(n))
     end if
 
-    ! Load data
     call self % setID(id)
 
-    ! Allocate and fill control points array (numPatches, 4, 4, 3)
+    ! Load control points into (numPatches, 4, 4, 3) array
     allocate(self % ctrlPts(self % numPatches, 4, 4, 3))
-
     m = 1
     do i = 1, self % numPatches
       do j = 1, 4
@@ -157,13 +134,34 @@ contains
       end do
     end do
 
-    ! Cache the AABB
+    ! Load weights (optional; defaults to 1.0 for polynomial Bezier)
+    allocate(self % weights(self % numPatches, 4, 4))
+    if (dict % isPresent('weights')) then
+      call dict % get(weightsList, 'weights')
+      n = size(weightsList)
+      if (n /= self % numPatches * 16) then
+        call fatalError(Here, 'Weights inconsistent with numPatches. '// &
+                              'Expected: '//numToChar(self % numPatches * 16)// &
+                              ' Got: '//numToChar(n))
+      end if
+      m = 1
+      do i = 1, self % numPatches
+        do j = 1, 4
+          do k = 1, 4
+            self % weights(i, j, k) = weightsList(m)
+            m = m + 1
+          end do
+        end do
+      end do
+    else
+      self % weights = ONE
+    end if
+
     self % aabb = self % boundingBox()
 
-    ! Build (N, 3) array of all control points for global GJK test
+    ! Flat array of all control points for the global GJK test
     self % nAllPts = self % numPatches * 16
     allocate(self % allPtsFlat(self % nAllPts, 3))
-
     m = 0
     do i = 1, self % numPatches
       do j = 1, 4
@@ -174,22 +172,63 @@ contains
       end do
     end do
 
-    ! Open diagnostic file
-    if (.not. diagFileOpen) then
-      open(unit=DIAG_UNIT, file='bezier_misclass.dat', status='replace', action='write')
-      write(DIAG_UNIT, '(A)') '# x  y  z  r2  analytical_inside  bezier_inside'
-      diagFileOpen = .true.
+    call self % buildAdjacency()
+
+    self % doDiag = .false.
+    self % diagR2 = ZERO
+    if (dict % isPresent('diagRadius')) then
+      call dict % get(self % diagR2, 'diagRadius')
+      self % diagR2 = self % diagR2 ** 2
+      self % doDiag = .true.
+      if (.not. diagFileOpen) then
+        open(unit=DIAG_UNIT, file='bezier_misclass.dat', status='replace', action='write')
+        write(DIAG_UNIT, '(A)') '# x  y  z  r2  analytical_inside  bezier_inside'
+        diagFileOpen = .true.
+      end if
     end if
 
   end subroutine init
 
   !!
-  !! Return axis-aligned bounding box for the surface
+  !! Build the patch adjacency map self%adj(numPatches, 4).
+  !! Two patches share an edge if all 4 boundary control points match
+  !! (forward or reverse order) to within MATCH_TOL.
   !!
-  !! See surface_inter for details
-  !!
-  !! Returns bounding box enclosing all control points
-  !!
+  subroutine buildAdjacency(self)
+    class(bezierVolume), intent(inout) :: self
+    integer(shortInt) :: i, j, ei, ej, k
+    real(defReal), dimension(4,3) :: edgeI, edgeJ
+    logical(defBool) :: fwd, rev
+    real(defReal), parameter :: MATCH_TOL = 1.0E-10_defReal
+
+    allocate(self % adj(self % numPatches, 4))
+    allocate(self % adjEdge(self % numPatches, 4))
+    self % adj     = -1
+    self % adjEdge = -1
+
+    do i = 1, self % numPatches
+      do ei = 1, 4
+        edgeI = patchEdge(self % ctrlPts(i,:,:,:), ei)
+        do j = i + 1, self % numPatches
+          do ej = 1, 4
+            edgeJ = patchEdge(self % ctrlPts(j,:,:,:), ej)
+            fwd = .true.
+            rev = .true.
+            do k = 1, 4
+              if (any(abs(edgeI(k,:) - edgeJ(k,:))   > MATCH_TOL)) fwd = .false.
+              if (any(abs(edgeI(k,:) - edgeJ(5-k,:)) > MATCH_TOL)) rev = .false.
+            end do
+            if (fwd .or. rev) then
+              self % adj(i, ei)     = j;  self % adjEdge(i, ei) = ej
+              self % adj(j, ej)     = i;  self % adjEdge(j, ej) = ei
+            end if
+          end do
+        end do
+      end do
+    end do
+
+  end subroutine buildAdjacency
+
   pure function boundingBox(self) result(aabb)
     class(bezierVolume), intent(in) :: self
     real(defReal), dimension(6)     :: aabb
@@ -213,71 +252,39 @@ contains
 
   end function boundingBox
 
-  !!
-  !! Evaluate surface expression c = F(r)
-  !!
-  !! Not available for parametric surface - returns 0
-  !!
   pure function evaluate(self, r) result(c)
     class(bezierVolume), intent(in)         :: self
     real(defReal), dimension(3), intent(in) :: r
     real(defReal)                           :: c
-
     c = ZERO
-
   end function evaluate
 
-  !!
-  !! Return distance to the surface
-  !!
-  !! Not available yet - returns INF
-  !!
   pure function distance(self, r, u) result(d)
     class(bezierVolume), intent(in)         :: self
-    real(defReal), dimension(3), intent(in) :: r
-    real(defReal), dimension(3), intent(in) :: u
+    real(defReal), dimension(3), intent(in) :: r, u
     real(defReal)                           :: d
-
     d = INF
-
   end function distance
 
-  !!
-  !! Returns TRUE if particle is going into +ve halfspace
-  !!
-  !! Not available - returns .false.
-  !!
   pure function going(self, r, u) result(halfspace)
     class(bezierVolume), intent(in)         :: self
-    real(defReal), dimension(3), intent(in) :: r
-    real(defReal), dimension(3), intent(in) :: u
+    real(defReal), dimension(3), intent(in) :: r, u
     logical(defBool)                        :: halfspace
-
     halfspace = .false.
-
   end function going
 
   !!
-  !! Check if point r is inside the AABB of a single patch (4x4 = 16 points)
-  !!
-  !! Args:
-  !!   patch [in] -> Control points of a single patch (4, 4, 3)
-  !!   r     [in] -> Point to test
-  !!
-  !! Result:
-  !!   True if r is inside the patch AABB
+  !! AABB pre-filter for a single patch's 16 control points.
   !!
   pure function inPatchAABB(self, patch, r) result(inside)
-    class(bezierVolume), intent(in)                :: self
-    real(defReal), dimension(4,4,3), intent(in)    :: patch
-    real(defReal), dimension(3), intent(in)        :: r
-    logical(defBool)                               :: inside
-    real(defReal), dimension(3)                    :: minPt, maxPt
-    integer(shortInt)                              :: j, k
+    class(bezierVolume), intent(in)             :: self
+    real(defReal), dimension(4,4,3), intent(in) :: patch
+    real(defReal), dimension(3), intent(in)     :: r
+    logical(defBool)                            :: inside
+    real(defReal), dimension(3)                 :: minPt, maxPt
+    integer(shortInt)                           :: j, k
 
-    minPt =  INF
-    maxPt = -INF
-
+    minPt =  INF;  maxPt = -INF
     do j = 1, 4
       do k = 1, 4
         if (patch(j,k,1) < minPt(1)) minPt(1) = patch(j,k,1)
@@ -296,213 +303,409 @@ contains
   end function inPatchAABB
 
   !!
-  !! Determine halfspace for a particle position using Bezier patch subdivision
+  !! Determine halfspace for a particle position.
   !!
-  !! Algorithm:
-  !!   1. AABB rejection test (cached)
-  !!   2. Global GJK convex hull rejection test on all control points
-  !!   3. Per-patch GJK convex hull test: for each patch, use AABB as cheap
-  !!      pre-filter then GJK on the 16 control points. If inside any patch
-  !!      hull, subdivide ALL patches uniformly (preserving watertightness)
-  !!      and repeat.
-  !!   4. When no patch hull contains the point, ray cast against the current
-  !!      watertight corner-point mesh.
-  !!
-  !! Args:
-  !!   r [in] -> Particle location
-  !!   u [in] -> Particle direction
-  !!
-  !! Result:
-  !!   True if position is in +ve halfspace (outside). False if inside.
+  !! Result: .true. = outside (positive halfspace)
   !!
   function halfspace(self, r, u) result(hs)
-    class(bezierVolume), intent(in)                :: self
-    real(defReal), dimension(3), intent(in)        :: r
-    real(defReal), dimension(3), intent(in)        :: u
-    logical(defBool)                               :: hs
-    real(defReal), dimension(:,:,:,:), allocatable  :: currentPts
-    real(defReal), dimension(16, 3)                :: patchPts
-    integer(shortInt)                              :: subdivision, i, j, k, m, totalPatches
-    logical(defBool)                               :: anyContaining
-    ! Diagnostic locals
-    real(defReal)                                  :: r2
-    logical(defBool)                               :: analyticalIn, bezierIn
-    real(defReal), parameter                       :: DIAG_R2 = 2.25_defReal  ! 1.5^2
+    class(bezierVolume), intent(in)         :: self
+    real(defReal), dimension(3), intent(in) :: r, u
+    logical(defBool)                        :: hs
 
-    ! Step 1: AABB test
+    ! Selective subdivision working arrays
+    real(defReal), dimension(:,:,:,:), allocatable :: curPts
+    real(defReal), dimension(:,:,:),   allocatable :: curWeights, newWeights
+    integer(shortInt), dimension(:), allocatable   :: origPatch, newOrig
+    logical(defBool), dimension(:), allocatable    :: needsSubdiv
+    real(defReal), dimension(:,:,:,:), allocatable :: newPts
+    ! UV parameter ranges for each sub-patch: [uMin, uMax, vMin, vMax]
+    real(defReal), dimension(:,:), allocatable :: uvRange, newUV
+
+    ! Subdivision tracking
+    logical(defBool), dimension(self % numPatches) :: wasSubdivided
+
+    ! Triangle mesh for ray cast
+    real(defReal), dimension(:,:,:), allocatable :: tris
+    integer(shortInt) :: nTri, maxTri
+
+    ! Working variables
+    real(defReal), dimension(16, 3) :: patchPts
+    real(defReal), dimension(4,4,3) :: Q00, Q01, Q10, Q11
+    real(defReal), dimension(4,4)   :: Q00w, Q01w, Q10w, Q11w
+    integer(shortInt) :: subdivision, i, j, k, m, nCur, newN, nNeed, P
+    integer(shortInt) :: eP_idx, P_adj
+
+    ! Corner points for mesh building
+    real(defReal), dimension(3) :: C00, C01, C10, C11
+
+    ! T-junction vertex collection: per-edge buffers + sort keys
+    ! MAX_TJ_BUF handles up to 2^8 = 256 sub-patches along one edge
+    integer(shortInt), parameter :: MAX_TJ_BUF = 260
+    real(defReal), dimension(MAX_TJ_BUF, 3) :: e1buf, e2buf, e3buf, e4buf
+    real(defReal), dimension(MAX_TJ_BUF)    :: e1dot, e2dot, e3dot, e4dot
+    integer(shortInt) :: n1, n2, n3, n4
+    logical(defBool) :: onEdge, isDup
+    real(defReal), dimension(3) :: pt1, pt2, tmpV3
+    real(defReal) :: tmpDot, u0, u1, v0, v1, um, vm
+    integer(shortInt) :: si
+    real(defReal), parameter :: TJ_TOL = 1.0E-10_defReal
+
+    ! Polygon buffer for fan triangulation of each triangle face
+    integer(shortInt), parameter :: MAX_POLY = 530   ! 2 * MAX_TJ_BUF + endpoints
+    real(defReal), dimension(MAX_POLY, 3) :: poly
+    integer(shortInt) :: nPoly
+
+    ! Diagnostic (only used when self%doDiag)
+    real(defReal)    :: r2
+    logical(defBool) :: analyticalIn, bezierIn
+
+    ! --- Step 1: AABB rejection ---
     if (r(1) < self % aabb(1) - SURF_TOL .or. r(1) > self % aabb(4) + SURF_TOL .or. &
         r(2) < self % aabb(2) - SURF_TOL .or. r(2) > self % aabb(5) + SURF_TOL .or. &
         r(3) < self % aabb(3) - SURF_TOL .or. r(3) > self % aabb(6) + SURF_TOL) then
-      hs = .true.  ! outside
-      goto 999
+      hs = .true.
+      go to 999
     end if
 
-    ! Step 2: Global convex hull test via GJK
+    ! --- Step 2: Global convex hull rejection ---
     if (.not. pointInConvexHull(self % allPtsFlat, self % nAllPts, r)) then
-      hs = .true.  ! outside
-      goto 999
+      hs = .true.
+      go to 999
     end if
 
-    ! Step 3: Uniform subdivision guided by per-patch GJK hull tests
-    allocate(currentPts(self % numPatches, 4, 4, 3))
-    currentPts = self % ctrlPts
-    totalPatches = self % numPatches
+    ! --- Step 3: Selective subdivision ---
+    nCur = self % numPatches
+    allocate(curPts(nCur, 4, 4, 3))
+    allocate(curWeights(nCur, 4, 4))
+    allocate(origPatch(nCur))
+    allocate(uvRange(nCur, 4))
+    curPts     = self % ctrlPts
+    curWeights = self % weights
+    do i = 1, nCur
+      origPatch(i) = i
+      uvRange(i, :) = (/ ZERO, ONE, ZERO, ONE /)
+    end do
+    wasSubdivided = .false.
 
     do subdivision = 1, MAX_SUBDIVISIONS
 
-      ! Check if point is inside any patch's convex hull
-      anyContaining = .false.
+      ! Identify which current patches need subdivision (AABB + GJK on 16 control points)
+      allocate(needsSubdiv(nCur))
+      needsSubdiv = .false.
+      nNeed = 0
 
-      do i = 1, totalPatches
-        ! Cheap AABB pre-filter
-        if (.not. self % inPatchAABB(currentPts(i,:,:,:), r)) cycle
-
-        ! GJK convex hull test on this patch's 16 control points
+      do i = 1, nCur
+        if (.not. self % inPatchAABB(curPts(i,:,:,:), r)) cycle
         m = 0
         do j = 1, 4
           do k = 1, 4
             m = m + 1
-            patchPts(m, :) = currentPts(i, j, k, :)
+            patchPts(m,:) = curPts(i, j, k, :)
           end do
         end do
-
         if (pointInConvexHull(patchPts, 16, r)) then
-          anyContaining = .true.
-          exit
+          needsSubdiv(i) = .true.
+          nNeed = nNeed + 1
         end if
       end do
 
-      ! If no patch hull contains the point, go to ray cast
-      if (.not. anyContaining) exit
+      if (nNeed == 0) then
+        ! GJK found no patch: the query point lies on a patch boundary where no
+        ! single patch's convex hull strictly contains it. Fall back to AABB-only
+        ! selection so boundary points still trigger subdivision.
+        do i = 1, nCur
+          if (self % inPatchAABB(curPts(i,:,:,:), r)) then
+            needsSubdiv(i) = .true.
+            nNeed = nNeed + 1
+          end if
+        end do
+        if (nNeed == 0) then
+          deallocate(needsSubdiv)
+          exit
+        end if
+      end if
 
-      ! Subdivide ALL patches uniformly to maintain watertight mesh
-      call subdivideAll(currentPts, totalPatches)
+      ! Build replacement list: keep unsplit patches, expand split ones into 4 each
+      newN = nCur + 3 * nNeed
+      allocate(newPts(newN, 4, 4, 3))
+      allocate(newWeights(newN, 4, 4))
+      allocate(newOrig(newN))
+      allocate(newUV(newN, 4))
+      j = 0
+      do i = 1, nCur
+        if (needsSubdiv(i)) then
+          wasSubdivided(origPatch(i)) = .true.
+          call subdividePatch(curPts(i,:,:,:), curWeights(i,:,:), &
+                              Q00, Q01, Q10, Q11, Q00w, Q01w, Q10w, Q11w)
+          u0 = uvRange(i,1);  u1 = uvRange(i,2)
+          v0 = uvRange(i,3);  v1 = uvRange(i,4)
+          um = HALF*(u0+u1);  vm = HALF*(v0+v1)
+          ! Q00: u∈[u0,um], v∈[v0,vm]
+          j = j + 1;  newPts(j,:,:,:) = Q00;  newWeights(j,:,:) = Q00w
+          newOrig(j) = origPatch(i);  newUV(j,:) = (/ u0, um, v0, vm /)
+          ! Q01: u∈[u0,um], v∈[vm,v1]
+          j = j + 1;  newPts(j,:,:,:) = Q01;  newWeights(j,:,:) = Q01w
+          newOrig(j) = origPatch(i);  newUV(j,:) = (/ u0, um, vm, v1 /)
+          ! Q10: u∈[um,u1], v∈[v0,vm]
+          j = j + 1;  newPts(j,:,:,:) = Q10;  newWeights(j,:,:) = Q10w
+          newOrig(j) = origPatch(i);  newUV(j,:) = (/ um, u1, v0, vm /)
+          ! Q11: u∈[um,u1], v∈[vm,v1]
+          j = j + 1;  newPts(j,:,:,:) = Q11;  newWeights(j,:,:) = Q11w
+          newOrig(j) = origPatch(i);  newUV(j,:) = (/ um, u1, vm, v1 /)
+        else
+          j = j + 1
+          newPts(j,:,:,:)  = curPts(i,:,:,:)
+          newWeights(j,:,:) = curWeights(i,:,:)
+          newOrig(j)        = origPatch(i)
+          newUV(j,:)        = uvRange(i,:)
+        end if
+      end do
+
+      deallocate(needsSubdiv)
+      call move_alloc(newPts,     curPts)
+      call move_alloc(newWeights, curWeights)
+      call move_alloc(newOrig,    origPatch)
+      call move_alloc(newUV,      uvRange)
+      nCur = newN
 
     end do
 
-    ! Step 4: Ray cast against the watertight corner-point mesh
     if (subdivision > MAX_SUBDIVISIONS) then
+      !$omp atomic
       bezierVolumeExceededCount = bezierVolumeExceededCount + 1
     end if
 
-    hs = .not. self % rayCast(currentPts, totalPatches, r)
+    ! --- Step 4: Build watertight triangle mesh with T-junction patching ---
+    !
+    ! For each original patch P:
+    !   If P was subdivided: add 2 corner triangles per sub-patch (watertight by
+    !     construction since all sub-patches of P share vertices at their shared edges).
+    !   If P was NOT subdivided: add the standard 2 corner triangles, but for any
+    !     edge where the adjacent patch WAS subdivided, insert the De Casteljau midpoint
+    !     of that boundary edge (T-junction vertex) to split the affected triangle.
+    !
+    ! Triangle orientation (winding unused — we just count hits):
+    !   T1 = (C00, C01, C11)   covers the u=0 and v=1 boundaries
+    !   T2 = (C00, C11, C10)   covers the u=1 and v=0 boundaries
+    !
+    ! Per-patch triangle splits when adjacent patch is subdivided:
+    !   Edge 1 (u=0, C00-C01) in T1: M1 on C00-C01  -> split T1 at M1
+    !   Edge 4 (v=1, C01-C11) in T1: M4 on C01-C11  -> split T1 at M4
+    !   Edge 2 (u=1, C10-C11) in T2: M2 on C10-C11  -> split T2 at M2
+    !   Edge 3 (v=0, C00-C10) in T2: M3 on C00-C10  -> split T2 at M3
 
-    ! Debug: trace deep misclassifications
-    r2 = r(1)**2 + r(2)**2 + r(3)**2
-    if (r2 < 1.21_defReal .and. (.not. hs .eqv. .false.)) then
-      ! Point is deep inside sphere (r < 1.1) but bezier says outside
-      !$omp critical(bezierDebug)
-      write(*, '(A)')           '*** DEEP MISCLASS DEBUG ***'
-      write(*, '(A, 3F10.4)')   '  Point:       ', r
-      write(*, '(A, F10.4)')    '  Radius:      ', sqrt(r2)
-      write(*, '(A, I4)')       '  Subdiv exit: ', subdivision
-      write(*, '(A, I8)')       '  Total patches:', totalPatches
-      write(*, '(A, L3)')       '  hs (outside):', hs
-      call self % rayCastDebug(currentPts, totalPatches, r)
-      !$omp end critical(bezierDebug)
-    end if
+    maxTri = MAX_TJ_BUF * nCur + MAX_TJ_BUF * self % numPatches
+    allocate(tris(maxTri, 3, 3))
+    nTri = 0
 
-    deallocate(currentPts)
+    do P = 1, self % numPatches
 
-    ! ---- Diagnostic: compare with analytical sphere ----
-    999 continue
-    r2 = r(1)**2 + r(2)**2 + r(3)**2
-    analyticalIn = (r2 < DIAG_R2)
-    bezierIn     = .not. hs
+      if (wasSubdivided(P)) then
+        ! Polygon-fan triangulation for each sub-patch of P, with within-patch
+        ! T-junction detection. Selective subdivision may leave adjacent sub-patches
+        ! of the same original patch at different depths; this closes those gaps.
+        do i = 1, nCur
+          if (origPatch(i) /= P) cycle
+          C00 = curPts(i, 1, 1, :)
+          C01 = curPts(i, 1, 4, :)
+          C10 = curPts(i, 4, 1, :)
+          C11 = curPts(i, 4, 4, :)
 
-    !$omp atomic
-    diagTotal = diagTotal + 1
+          call collectIntraPatchEdgeVerts(curPts, nCur, origPatch, uvRange, i, 1, &
+                                          C00, C01, e1buf, n1)
+          call collectIntraPatchEdgeVerts(curPts, nCur, origPatch, uvRange, i, 2, &
+                                          C10, C11, e2buf, n2)
+          call collectIntraPatchEdgeVerts(curPts, nCur, origPatch, uvRange, i, 3, &
+                                          C00, C10, e3buf, n3)
+          call collectIntraPatchEdgeVerts(curPts, nCur, origPatch, uvRange, i, 4, &
+                                          C01, C11, e4buf, n4)
 
-    if (analyticalIn .neqv. bezierIn) then
-      !$omp critical(bezierDiag)
-      diagMisclass = diagMisclass + 1
-      if (diagFileOpen) then
-        write(DIAG_UNIT, '(3ES16.8, ES16.8, L3, L3)') r(1), r(2), r(3), r2, analyticalIn, bezierIn
+          ! T1: fan over polygon C00 → [e1 interior] → C01 → [e4 interior] → C11
+          nPoly = n1
+          poly(1:n1, :) = e1buf(1:n1, :)
+          do si = 2, n4
+            nPoly = nPoly + 1
+            poly(nPoly, :) = e4buf(si, :)
+          end do
+          do si = 2, nPoly - 1
+            nTri = nTri + 1
+            tris(nTri, 1, :) = poly(1, :)
+            tris(nTri, 2, :) = poly(si, :)
+            tris(nTri, 3, :) = poly(si+1, :)
+          end do
+
+          ! T2: fan over polygon C00 → [e3 interior] → C10 → [e2 interior] → C11
+          nPoly = n3
+          poly(1:n3, :) = e3buf(1:n3, :)
+          do si = 2, n2
+            nPoly = nPoly + 1
+            poly(nPoly, :) = e2buf(si, :)
+          end do
+          do si = 2, nPoly - 1
+            nTri = nTri + 1
+            tris(nTri, 1, :) = poly(1, :)
+            tris(nTri, 2, :) = poly(si, :)
+            tris(nTri, 3, :) = poly(si+1, :)
+          end do
+        end do
+
+      else
+        ! Unsubdivided patch Q: polygon-fan triangulation with full T-junction matching.
+        !
+        ! For each boundary edge of Q adjacent to a subdivided patch, collect ALL
+        ! sub-patch corners lying on that shared edge, sort them along the edge, and
+        ! build a fan from the opposite vertex.  This closes multi-level T-junction
+        ! gaps (not just the single t=0.5 midpoint as before).
+        !
+        ! T1 polygon: C00 → [e1 interior] → C01 → [e4 interior] → C11  (fan from C00)
+        ! T2 polygon: C00 → [e3 interior] → C10 → [e2 interior] → C11  (fan from C00)
+
+        C00 = self % ctrlPts(P, 1, 1, :)
+        C01 = self % ctrlPts(P, 1, 4, :)
+        C10 = self % ctrlPts(P, 4, 1, :)
+        C11 = self % ctrlPts(P, 4, 4, :)
+
+        ! Collect sorted vertices for each edge (endpoints always included)
+        P_adj = self % adj(P, 1)
+        if (P_adj > 0 .and. wasSubdivided(P_adj)) then
+          eP_idx = self % adjEdge(P, 1)
+          call collectEdgeVerts(curPts, nCur, origPatch, uvRange, P_adj, eP_idx, &
+                                C00, C01, e1buf, n1)
+        else
+          n1 = 2;  e1buf(1,:) = C00;  e1buf(2,:) = C01
+        end if
+
+        P_adj = self % adj(P, 2)
+        if (P_adj > 0 .and. wasSubdivided(P_adj)) then
+          eP_idx = self % adjEdge(P, 2)
+          call collectEdgeVerts(curPts, nCur, origPatch, uvRange, P_adj, eP_idx, &
+                                C10, C11, e2buf, n2)
+        else
+          n2 = 2;  e2buf(1,:) = C10;  e2buf(2,:) = C11
+        end if
+
+        P_adj = self % adj(P, 3)
+        if (P_adj > 0 .and. wasSubdivided(P_adj)) then
+          eP_idx = self % adjEdge(P, 3)
+          call collectEdgeVerts(curPts, nCur, origPatch, uvRange, P_adj, eP_idx, &
+                                C00, C10, e3buf, n3)
+        else
+          n3 = 2;  e3buf(1,:) = C00;  e3buf(2,:) = C10
+        end if
+
+        P_adj = self % adj(P, 4)
+        if (P_adj > 0 .and. wasSubdivided(P_adj)) then
+          eP_idx = self % adjEdge(P, 4)
+          call collectEdgeVerts(curPts, nCur, origPatch, uvRange, P_adj, eP_idx, &
+                                C01, C11, e4buf, n4)
+        else
+          n4 = 2;  e4buf(1,:) = C01;  e4buf(2,:) = C11
+        end if
+
+        ! --- T1: polygon [e1_sorted || e4_sorted[2:]], fan from C00 ---
+        nPoly = n1
+        poly(1:n1, :) = e1buf(1:n1, :)
+        do si = 2, n4
+          nPoly = nPoly + 1
+          poly(nPoly, :) = e4buf(si, :)
+        end do
+        do si = 2, nPoly - 1
+          nTri = nTri + 1
+          tris(nTri, 1, :) = poly(1, :)
+          tris(nTri, 2, :) = poly(si, :)
+          tris(nTri, 3, :) = poly(si+1, :)
+        end do
+
+        ! --- T2: polygon [e3_sorted || e2_sorted[2:]], fan from C00 ---
+        nPoly = n3
+        poly(1:n3, :) = e3buf(1:n3, :)
+        do si = 2, n2
+          nPoly = nPoly + 1
+          poly(nPoly, :) = e2buf(si, :)
+        end do
+        do si = 2, nPoly - 1
+          nTri = nTri + 1
+          tris(nTri, 1, :) = poly(1, :)
+          tris(nTri, 2, :) = poly(si, :)
+          tris(nTri, 3, :) = poly(si+1, :)
+        end do
+
       end if
-      !$omp end critical(bezierDiag)
+    end do
+
+    ! --- Step 5: Ray cast against the watertight triangle mesh ---
+    hs = .not. self % rayCast(tris, nTri, r)
+
+    deallocate(curPts, curWeights, origPatch, uvRange, tris)
+
+    999 continue
+
+    if (self % doDiag) then
+      r2           = r(1)**2 + r(2)**2 + r(3)**2
+      analyticalIn = (r2 < self % diagR2)
+      bezierIn     = .not. hs
+      !$omp atomic
+      diagTotal = diagTotal + 1
+      if (analyticalIn .neqv. bezierIn) then
+        !$omp critical(bezierDiag)
+        diagMisclass = diagMisclass + 1
+        if (diagFileOpen) then
+          write(DIAG_UNIT, '(3ES16.8, ES16.8, L3, L3)') r(1), r(2), r(3), r2, analyticalIn, bezierIn
+        end if
+        !$omp end critical(bezierDiag)
+      end if
     end if
 
   end function halfspace
 
-  ! ============================================================================
+  ! ---------------------------------------------------------------------------
   ! GJK convex hull containment test
-  ! ============================================================================
+  ! ---------------------------------------------------------------------------
 
-  !!
-  !! 3D cross product: c = a x b
-  !!
   pure function cross3(a, b) result(c)
     real(defReal), dimension(3), intent(in) :: a, b
     real(defReal), dimension(3)             :: c
-
     c(1) = a(2)*b(3) - a(3)*b(2)
     c(2) = a(3)*b(1) - a(1)*b(3)
     c(3) = a(1)*b(2) - a(2)*b(1)
-
   end function cross3
 
-  !!
-  !! Triple cross product: (a x b) x c
-  !!
-  !! Useful for computing the component of c perpendicular to a, projected
-  !! into the plane defined by a and b.
-  !!
   pure function tripleCross(a, b, c) result(r)
     real(defReal), dimension(3), intent(in) :: a, b, c
     real(defReal), dimension(3)             :: r
-
     r = cross3(cross3(a, b), c)
-
   end function tripleCross
 
   !!
-  !! Test if point r is inside the convex hull of a set of 3D points using GJK
-  !!
-  !! The Gilbert-Johnson-Keerthi algorithm tests whether the origin lies inside
-  !! the convex hull of {pts(i,:) - r}, working directly on the point set without
-  !! explicitly constructing the hull. Robust to degenerate configurations
-  !! (coplanar, collinear, duplicate points).
-  !!
-  !! Args:
-  !!   pts  [in] -> Array of 3D points (nPts, 3)
-  !!   nPts [in] -> Number of points
-  !!   r    [in] -> Query point
-  !!
-  !! Result:
-  !!   True if r is inside the convex hull of pts
+  !! GJK test: is point r inside the convex hull of pts(1:nPts,:)?
   !!
   pure function pointInConvexHull(pts, nPts, r) result(inside)
     real(defReal), dimension(:,:), intent(in) :: pts
     integer(shortInt), intent(in)             :: nPts
     real(defReal), dimension(3), intent(in)   :: r
     logical(defBool)                          :: inside
-    ! GJK working variables
-    real(defReal), dimension(4, 3)            :: S          ! Simplex (up to tetrahedron)
-    integer(shortInt)                         :: nS         ! Current simplex size
-    real(defReal), dimension(3)               :: d          ! Search direction
-    real(defReal), dimension(3)               :: sup        ! Support point
-    real(defReal)                             :: maxDot, dp
-    integer(shortInt)                         :: i, bestIdx, iter
-    integer(shortInt), parameter              :: MAX_ITER = 64
+    real(defReal), dimension(4, 3) :: S
+    integer(shortInt)              :: nS, i, bestIdx, iter
+    real(defReal), dimension(3)    :: d, sup
+    real(defReal)                  :: maxDot, dp
+    integer(shortInt), parameter   :: MAX_ITER = 64
 
     inside = .false.
-
     if (nPts < 1) return
 
-    ! Initial direction: from r toward centroid of points (in shifted space)
+    ! Initial direction: from r toward centroid of the point set
     d = ZERO
     do i = 1, nPts
       d = d + pts(i,:)
     end do
     d = d / real(nPts, defReal) - r
 
-    ! If r is at the centroid, it is inside
     if (dot_product(d, d) < GJK_EPS) then
       inside = .true.
       return
     end if
 
-    ! First support point in shifted space {pts - r}
+    ! First support point
     maxDot = -INF
     bestIdx = 1
     do i = 1, nPts
@@ -514,17 +717,13 @@ contains
     end do
     sup = pts(bestIdx,:) - r
 
-    ! If support doesn't reach origin along d, origin is outside
     if (dot_product(sup, d) < ZERO) return
 
-    ! Initialise simplex with first support point
     nS = 1
     S(1,:) = sup
-    d = -sup  ! Direction from support toward origin
+    d = -sup
 
-    ! Main GJK loop
     do iter = 1, MAX_ITER
-      ! Find support point in direction d
       maxDot = -INF
       bestIdx = 1
       do i = 1, nPts
@@ -536,36 +735,19 @@ contains
       end do
       sup = pts(bestIdx,:) - r
 
-      ! If new support doesn't pass origin along d, origin is outside hull
       if (dot_product(sup, d) < ZERO) return
 
-      ! Add to simplex
       nS = nS + 1
       S(nS,:) = sup
 
-      ! Process simplex — updates S, nS, d, and may set inside = .true.
       call gjkDoSimplex(S, nS, d, inside)
       if (inside) return
     end do
 
-    ! Failed to converge — conservatively report inside (triggers subdivision)
-    inside = .true.
+    inside = .true.  ! failed to converge: conservatively inside
 
   end function pointInConvexHull
 
-  !!
-  !! Process the GJK simplex: determine new search direction or detect containment
-  !!
-  !! The newest point A is always at position nS. Handles line (nS=2),
-  !! triangle (nS=3), and tetrahedron (nS=4) cases. May reduce the simplex
-  !! by discarding vertices that are not closest to the origin.
-  !!
-  !! Args:
-  !!   S      [inout] -> Simplex vertices, may be rearranged/reduced
-  !!   nS     [inout] -> Simplex size, may decrease
-  !!   d      [inout] -> New search direction toward origin
-  !!   inside [out]   -> True if origin is inside the simplex (tetrahedron case)
-  !!
   pure subroutine gjkDoSimplex(S, nS, d, inside)
     real(defReal), dimension(4,3), intent(inout) :: S
     integer(shortInt), intent(inout)             :: nS
@@ -579,78 +761,53 @@ contains
 
     inside = .false.
 
-    ! --- Tetrahedron case (nS = 4) ---
-    ! Check which face the origin is outside; reduce to that triangle.
-    ! If inside all faces -> origin is inside the tetrahedron.
     if (nS == 4) then
-      a  = S(4,:)
-      b  = S(3,:)
-      c  = S(2,:)
-      dd = S(1,:)
-      ab = b - a;  ac = c - a;  ad = dd - a;  ao = -a
+      a  = S(4,:);  b = S(3,:);  c = S(2,:);  dd = S(1,:)
+      ab = b - a;   ac = c - a;  ad = dd - a;  ao = -a
 
-      ! Face normals, oriented outward from the tetrahedron
-      abc = cross3(ab, ac)
-      if (dot_product(abc, ad) > ZERO) abc = -abc   ! away from D
-      acd = cross3(ac, ad)
-      if (dot_product(acd, ab) > ZERO) acd = -acd   ! away from B
-      adb = cross3(ad, ab)
-      if (dot_product(adb, ac) > ZERO) adb = -adb   ! away from C
+      abc = cross3(ab, ac);  if (dot_product(abc, ad) > ZERO) abc = -abc
+      acd = cross3(ac, ad);  if (dot_product(acd, ab) > ZERO) acd = -acd
+      adb = cross3(ad, ab);  if (dot_product(adb, ac) > ZERO) adb = -adb
 
       if (dot_product(abc, ao) > ZERO) then
-        ! Outside face ABC — reduce to triangle, preserve outward winding
         if (dot_product(cross3(ab, ac), ad) < ZERO) then
           S(1,:) = c;  S(2,:) = b;  S(3,:) = a
         else
           S(1,:) = b;  S(2,:) = c;  S(3,:) = a
         end if
         nS = 3
-
       else if (dot_product(acd, ao) > ZERO) then
-        ! Outside face ACD
         if (dot_product(cross3(ac, ad), ab) < ZERO) then
           S(1,:) = dd;  S(2,:) = c;  S(3,:) = a
         else
           S(1,:) = c;  S(2,:) = dd;  S(3,:) = a
         end if
         nS = 3
-
       else if (dot_product(adb, ao) > ZERO) then
-        ! Outside face ADB
         if (dot_product(cross3(ad, ab), ac) < ZERO) then
           S(1,:) = b;  S(2,:) = dd;  S(3,:) = a
         else
           S(1,:) = dd;  S(2,:) = b;  S(3,:) = a
         end if
         nS = 3
-
       else
-        ! Inside all faces — origin is enclosed
         inside = .true.
         return
       end if
     end if
 
-    ! --- Triangle case (nS = 3) ---
-    ! Determine whether origin is closest to edge AC, edge AB, or the face.
     if (nS == 3) then
-      a  = S(3,:)
-      b  = S(2,:)
-      c  = S(1,:)
-      ab = b - a;  ac = c - a;  ao = -a
+      a  = S(3,:);  b = S(2,:);  c = S(1,:)
+      ab = b - a;   ac = c - a;  ao = -a
 
-      abc    = cross3(ab, ac)         ! face normal
-      acPerp = cross3(abc, ac)        ! perpendicular to AC, pointing away from B
-      abPerp = cross3(ab, abc)        ! perpendicular to AB, pointing away from C
-
+      abc    = cross3(ab, ac)
+      acPerp = cross3(abc, ac)
+      abPerp = cross3(ab, abc)
       checkAB = .false.
 
       if (dot_product(acPerp, ao) > ZERO) then
-        ! Outside edge AC
         if (dot_product(ac, ao) > ZERO) then
-          ! Closest to edge AC
-          S(1,:) = c;  S(2,:) = a
-          nS = 2
+          S(1,:) = c;  S(2,:) = a;  nS = 2
           d = tripleCross(ac, ao, ac)
           return
         else
@@ -659,42 +816,31 @@ contains
       end if
 
       if (checkAB .or. dot_product(abPerp, ao) > ZERO) then
-        ! Outside edge AB or vertex A region
         if (dot_product(ab, ao) > ZERO) then
-          S(1,:) = b;  S(2,:) = a
-          nS = 2
+          S(1,:) = b;  S(2,:) = a;  nS = 2
           d = tripleCross(ab, ao, ab)
         else
-          S(1,:) = a
-          nS = 1
-          d = ao
+          S(1,:) = a;  nS = 1;  d = ao
         end if
         return
       end if
 
-      ! Inside the triangle — origin is above or below the face
       if (dot_product(abc, ao) > ZERO) then
         d = abc
       else
-        ! Flip winding so normal points toward origin
         S(1,:) = b;  S(2,:) = c;  S(3,:) = a
         d = -abc
       end if
       return
     end if
 
-    ! --- Line case (nS = 2) ---
     if (nS == 2) then
-      a  = S(2,:)
-      b  = S(1,:)
-      ab = b - a;  ao = -a
+      a  = S(2,:);  b = S(1,:)
+      ab = b - a;   ao = -a
 
       if (dot_product(ab, ao) > ZERO) then
-        ! Origin is alongside the edge — search perpendicular to AB toward origin
         tcross = tripleCross(ab, ao, ab)
         if (dot_product(tcross, tcross) < GJK_EPS) then
-          ! AB and AO are parallel — origin is on the line segment
-          ! Pick any perpendicular direction
           if (abs(ab(1)) < abs(ab(2))) then
             d(1) = ZERO;  d(2) = -ab(3);  d(3) = ab(2)
           else
@@ -704,109 +850,72 @@ contains
           d = tcross
         end if
       else
-        ! Origin is behind A — reduce to just A
-        S(1,:) = a
-        nS = 1
-        d = ao
+        S(1,:) = a;  nS = 1;  d = ao
       end if
       return
     end if
 
   end subroutine gjkDoSimplex
 
-  ! ============================================================================
+  ! ---------------------------------------------------------------------------
   ! Bezier patch subdivision
-  ! ============================================================================
+  ! ---------------------------------------------------------------------------
 
   !!
-  !! Subdivide all patches into 4 sub-patches each using De Casteljau algorithm
+  !! Rational Bezier patch subdivision at t=0.5 using homogeneous De Casteljau.
+  !! Lifts control points to 4D homogeneous space (wx,wy,wz,w), subdivides with
+  !! standard linear averaging (correct for any dimensionality), then dehomogenizes.
+  !! For unit weights this is identical to polynomial De Casteljau.
   !!
-  !! Each bicubic patch is subdivided in both u and v at t=0.5, producing 4 sub-patches.
-  !! The output array is reallocated to hold 4x as many patches.
-  !!
-  !! Args:
-  !!   pts      [inout] -> Control points, reallocated to (4*nPatches, 4, 4, 3)
-  !!   nPatches [inout] -> Updated to 4*nPatches
-  !!
-  subroutine subdivideAll(pts, nPatches)
-    real(defReal), dimension(:,:,:,:), allocatable, intent(inout) :: pts
-    integer(shortInt), intent(inout)                          :: nPatches
-    real(defReal), dimension(:,:,:,:), allocatable            :: newPts
-    real(defReal), dimension(4,4,3)                           :: patch
-    real(defReal), dimension(4,4,3)                           :: Q00, Q01, Q10, Q11
-    integer(shortInt)                                         :: i, newN
-
-    newN = nPatches * 4
-    allocate(newPts(newN, 4, 4, 3))
-
-    do i = 1, nPatches
-      patch = pts(i,:,:,:)
-      call subdividePatch(patch, Q00, Q01, Q10, Q11)
-      newPts((i-1)*4 + 1, :,:,:) = Q00
-      newPts((i-1)*4 + 2, :,:,:) = Q01
-      newPts((i-1)*4 + 3, :,:,:) = Q10
-      newPts((i-1)*4 + 4, :,:,:) = Q11
-    end do
-
-    call move_alloc(newPts, pts)
-    nPatches = newN
-
-  end subroutine subdivideAll
-
-  !!
-  !! Subdivide a single bicubic Bezier patch into 4 sub-patches at (u,v) = (0.5, 0.5)
-  !!
-  !! Uses De Casteljau algorithm, first in u then in v direction.
-  !!
-  !! Args:
-  !!   patch [in]  -> Original 4x4 control points
-  !!   Q00   [out] -> Bottom-left sub-patch
-  !!   Q01   [out] -> Bottom-right sub-patch
-  !!   Q10   [out] -> Top-left sub-patch
-  !!   Q11   [out] -> Top-right sub-patch
-  !!
-  subroutine subdividePatch(patch, Q00, Q01, Q10, Q11)
+  subroutine subdividePatch(patch, wts, Q00, Q01, Q10, Q11, Q00w, Q01w, Q10w, Q11w)
     real(defReal), dimension(4,4,3), intent(in)  :: patch
+    real(defReal), dimension(4,4),   intent(in)  :: wts
     real(defReal), dimension(4,4,3), intent(out) :: Q00, Q01, Q10, Q11
-    real(defReal), dimension(4,4,3)              :: left, right
-    real(defReal), dimension(4,3)                :: rowL, rowR
-    real(defReal), dimension(4,3)                :: colL, colR
-    integer(shortInt)                            :: i, j
+    real(defReal), dimension(4,4),   intent(out) :: Q00w, Q01w, Q10w, Q11w
+    real(defReal), dimension(4,4,4) :: H, leftH, rightH, HL, HR
+    real(defReal), dimension(4,4)   :: rL, rR
+    integer(shortInt) :: i, j
 
-    ! First subdivide each row in u direction at t=0.5
+    ! Lift to 4D homogeneous: H(i,j,1:3) = w*P, H(i,j,4) = w
     do i = 1, 4
-      call subdivideRow(patch(i,:,:), rowL, rowR)
-      left(i,:,:)  = rowL
-      right(i,:,:) = rowR
+      do j = 1, 4
+        H(i,j,1:3) = wts(i,j) * patch(i,j,:)
+        H(i,j,4)   = wts(i,j)
+      end do
     end do
 
-    ! Then subdivide each column of left and right halves in v direction at t=0.5
-    do j = 1, 4
-      call subdivideRow(left(:,j,:), colL, colR)
-      Q00(:,j,:) = colL
-      Q10(:,j,:) = colR
+    ! Subdivide in v-direction (each u-row H(i,:,:))
+    do i = 1, 4
+      call subdivideRowH(H(i,:,:), rL, rR)
+      leftH(i,:,:)  = rL
+      rightH(i,:,:) = rR
     end do
 
+    ! Subdivide left-v half in u-direction (each v-column leftH(:,j,:))
     do j = 1, 4
-      call subdivideRow(right(:,j,:), colL, colR)
-      Q01(:,j,:) = colL
-      Q11(:,j,:) = colR
+      call subdivideRowH(leftH(:,j,:), rL, rR)
+      HL(:,j,:) = rL   ! Q00 homogeneous
+      HR(:,j,:) = rR   ! Q10 homogeneous
     end do
+    call dehomogenize4x4(HL, Q00, Q00w)
+    call dehomogenize4x4(HR, Q10, Q10w)
+
+    ! Subdivide right-v half in u-direction
+    do j = 1, 4
+      call subdivideRowH(rightH(:,j,:), rL, rR)
+      HL(:,j,:) = rL   ! Q01 homogeneous
+      HR(:,j,:) = rR   ! Q11 homogeneous
+    end do
+    call dehomogenize4x4(HL, Q01, Q01w)
+    call dehomogenize4x4(HR, Q11, Q11w)
 
   end subroutine subdividePatch
 
-  !!
-  !! Subdivide a cubic Bezier row of 4 control points at t=0.5 using De Casteljau
-  !!
-  !! Args:
-  !!   row  [in]  -> 4 control points (4, 3)
-  !!   left [out] -> Left sub-curve control points
-  !!   right[out] -> Right sub-curve control points
-  !!
-  subroutine subdivideRow(row, left, right)
-    real(defReal), dimension(4,3), intent(in)  :: row
-    real(defReal), dimension(4,3), intent(out) :: left, right
-    real(defReal), dimension(3)                :: p01, p12, p23, p012, p123, p0123
+  !! De Casteljau subdivision at t=0.5 for a row of 4 homogeneous points (4-component).
+  subroutine subdivideRowH(row, left, right)
+    real(defReal), dimension(4,4), intent(in)  :: row
+    real(defReal), dimension(4,4), intent(out) :: left, right
+    real(defReal), dimension(4) :: p01, p12, p23, p012, p123, p0123
 
     p01   = HALF * (row(1,:) + row(2,:))
     p12   = HALF * (row(2,:) + row(3,:))
@@ -815,90 +924,72 @@ contains
     p123  = HALF * (p12  + p23)
     p0123 = HALF * (p012 + p123)
 
-    left(1,:)  = row(1,:)
-    left(2,:)  = p01
-    left(3,:)  = p012
-    left(4,:)  = p0123
+    left(1,:)  = row(1,:);  left(2,:)  = p01;    left(3,:)  = p012;  left(4,:)  = p0123
+    right(1,:) = p0123;     right(2,:) = p123;   right(3,:) = p23;   right(4,:) = row(4,:)
 
-    right(1,:) = p0123
-    right(2,:) = p123
-    right(3,:) = p23
-    right(4,:) = row(4,:)
+  end subroutine subdivideRowH
 
-  end subroutine subdivideRow
+  !! Dehomogenize a 4x4 array of 4D homogeneous points to 3D positions and weights.
+  subroutine dehomogenize4x4(H, pts, wts)
+    real(defReal), dimension(4,4,4), intent(in)  :: H
+    real(defReal), dimension(4,4,3), intent(out) :: pts
+    real(defReal), dimension(4,4),   intent(out) :: wts
+    integer(shortInt) :: i, j
+    real(defReal), parameter :: W_MIN = 1.0E-30_defReal
 
-  ! ============================================================================
+    do i = 1, 4
+      do j = 1, 4
+        wts(i,j) = H(i,j,4)
+        if (abs(wts(i,j)) > W_MIN) then
+          pts(i,j,:) = H(i,j,1:3) / wts(i,j)
+        else
+          pts(i,j,:) = ZERO
+        end if
+      end do
+    end do
+
+  end subroutine dehomogenize4x4
+
+  ! ---------------------------------------------------------------------------
   ! Ray casting
-  ! ============================================================================
+  ! ---------------------------------------------------------------------------
 
   !!
-  !! Ray cast against corner-point mesh to determine inside/outside
+  !! Ray cast against the provided triangle list to determine inside/outside.
+  !! Counts forward intersections; odd = inside, even = outside.
   !!
-  !! Fires a ray from r and counts intersections with the triangulated corner
-  !! mesh (2 triangles per patch quad). Odd intersections -> inside, Even -> outside.
-  !! If degenerate intersection detected, perturbs ray direction and retries.
-  !!
-  !! Args:
-  !!   pts      [in] -> Current control points
-  !!   nPatches [in] -> Number of patches
-  !!   r        [in] -> Point to test
-  !!
-  !! Result:
-  !!   True if inside
-  !!
-  function rayCast(self, pts, nPatches, r) result(inside)
-    class(bezierVolume), intent(in)               :: self
-    real(defReal), dimension(:,:,:,:), intent(in) :: pts
-    integer(shortInt), intent(in)                 :: nPatches
-    real(defReal), dimension(3), intent(in)       :: r
-    logical(defBool)                              :: inside
-    real(defReal), dimension(3)                   :: rayDir
-    real(defReal), dimension(3)                   :: v0, v1, v2, v3
-    integer(shortInt)                             :: count, i
-    logical(defBool)                              :: hit, nearZero, anyNearZero
-    real(defReal), dimension(3)                   :: rLocal
-    real(defReal), parameter                      :: NUDGE = 1.0E-5_defReal
+  function rayCast(self, tris, nTri, r) result(inside)
+    class(bezierVolume), intent(in)              :: self
+    real(defReal), dimension(:,:,:), intent(in)  :: tris     ! (nTri, 3, 3)
+    integer(shortInt), intent(in)                :: nTri
+    real(defReal), dimension(3), intent(in)      :: r
+    logical(defBool)                             :: inside
+    real(defReal), dimension(3) :: rayDir, v0, v1, v2, rLocal
+    integer(shortInt)           :: count, i
+    logical(defBool)            :: hit, nearZero, anyNearZero
+    real(defReal), parameter    :: RAY_NUDGE = 1.0E-5_defReal
 
     rayDir = (/ ONE, ONE / 3.0_defReal, ONE / 7.0_defReal /)
     rayDir = rayDir / norm2(rayDir)
 
-    ! First pass with original point
     count = 0
     anyNearZero = .false.
 
-    do i = 1, nPatches
-      v0 = pts(i, 1, 1, :)
-      v1 = pts(i, 1, 4, :)
-      v2 = pts(i, 4, 4, :)
-      v3 = pts(i, 4, 1, :)
-
+    do i = 1, nTri
+      v0 = tris(i, 1, :);  v1 = tris(i, 2, :);  v2 = tris(i, 3, :)
       call self % rayTriangle(r, rayDir, v0, v1, v2, hit, nearZero)
-      if (hit) count = count + 1
-      if (nearZero) anyNearZero = .true.
-
-      call self % rayTriangle(r, rayDir, v0, v2, v3, hit, nearZero)
-      if (hit) count = count + 1
+      if (hit)     count = count + 1
       if (nearZero) anyNearZero = .true.
     end do
 
-    ! If degenerate (count=0 and near-zero detected), nudge and recast once
+    ! If degenerate and no hits, nudge the origin and retry
     if (count == 0 .and. anyNearZero) then
-      rLocal = r + (/ NUDGE, NUDGE, NUDGE /)
+      rLocal = r + (/ RAY_NUDGE, RAY_NUDGE, RAY_NUDGE /)
       count = 0
-      anyNearZero = .false.
-      do i = 1, nPatches
-        v0 = pts(i, 1, 1, :)
-        v1 = pts(i, 1, 4, :)
-        v2 = pts(i, 4, 4, :)
-        v3 = pts(i, 4, 1, :)
-
+      do i = 1, nTri
+        v0 = tris(i, 1, :);  v1 = tris(i, 2, :);  v2 = tris(i, 3, :)
         call self % rayTriangle(rLocal, rayDir, v0, v1, v2, hit, nearZero)
         if (hit) count = count + 1
-        if (nearZero) anyNearZero = .true.
-
-        call self % rayTriangle(rLocal, rayDir, v0, v2, v3, hit, nearZero)
-        if (hit) count = count + 1
-        if (nearZero) anyNearZero = .true.
       end do
     end if
 
@@ -906,41 +997,31 @@ contains
 
   end function rayCast
 
-  !!
-  !! Debug version of rayCast — prints per-patch hit details
-  !!
-  subroutine rayCastDebug(self, pts, nPatches, r)
-    class(bezierVolume), intent(in)               :: self
-    real(defReal), dimension(:,:,:,:), intent(in) :: pts
-    integer(shortInt), intent(in)                 :: nPatches
-    real(defReal), dimension(3), intent(in)       :: r
-    real(defReal), dimension(3)                   :: rayDir
-    real(defReal), dimension(3)                   :: v0, v1, v2, v3
-    integer(shortInt)                             :: count, i
-    logical(defBool)                              :: hit1, hit2, nz
+  subroutine rayCastDebug(self, tris, nTri, r)
+    class(bezierVolume), intent(in)              :: self
+    real(defReal), dimension(:,:,:), intent(in)  :: tris
+    integer(shortInt), intent(in)                :: nTri
+    real(defReal), dimension(3), intent(in)      :: r
+    real(defReal), dimension(3) :: rayDir, v0, v1, v2
+    integer(shortInt)           :: count, i
+    logical(defBool)            :: hit, nz
 
     rayDir = (/ ONE, ONE / 3.0_defReal, ONE / 7.0_defReal /)
     rayDir = rayDir / norm2(rayDir)
 
     count = 0
     write(*, '(A, 3F10.6)') '  Ray direction: ', rayDir
+    write(*, '(A, I8)')     '  Total triangles: ', nTri
 
-    do i = 1, nPatches
-      v0 = pts(i, 1, 1, :)
-      v1 = pts(i, 1, 4, :)
-      v2 = pts(i, 4, 4, :)
-      v3 = pts(i, 4, 1, :)
-
-      call self % rayTriangle(r, rayDir, v0, v1, v2, hit1, nz)
-      call self % rayTriangle(r, rayDir, v0, v2, v3, hit2, nz)
-
-      if (hit1 .or. hit2) then
-        count = count + merge(1, 0, hit1) + merge(1, 0, hit2)
-        write(*, '(A, I6, A, L2, A, L2)') '  Patch ', i, ': T1=', hit1, ' T2=', hit2
-        write(*, '(A, 3F10.4)') '    v0=', v0
-        write(*, '(A, 3F10.4)') '    v1=', v1
-        write(*, '(A, 3F10.4)') '    v2=', v2
-        write(*, '(A, 3F10.4)') '    v3=', v3
+    do i = 1, nTri
+      v0 = tris(i, 1, :);  v1 = tris(i, 2, :);  v2 = tris(i, 3, :)
+      call self % rayTriangle(r, rayDir, v0, v1, v2, hit, nz)
+      if (hit) then
+        count = count + 1
+        write(*, '(A, I6)') '  HIT tri: ', i
+        write(*, '(A, 3F8.4)') '    v0: ', v0
+        write(*, '(A, 3F8.4)') '    v1: ', v1
+        write(*, '(A, 3F8.4)') '    v2: ', v2
       end if
     end do
 
@@ -949,101 +1030,66 @@ contains
   end subroutine rayCastDebug
 
   !!
-  !! Watertight ray-triangle intersection (Woop, Benthin & Wald 2013)
-  !!
-  !! Transforms triangle vertices into ray-aligned coordinates and computes
-  !! edge functions that depend only on each edge's two vertices. Shared edges
-  !! between adjacent triangles produce bitwise-identical edge function values,
-  !! guaranteeing exactly one hit per shared edge regardless of ray direction.
-  !!
-  !! Args:
-  !!   r          [in]  -> Ray origin
-  !!   rayDir     [in]  -> Ray direction (normalised)
-  !!   v0,v1,v2   [in]  -> Triangle vertices
-  !!   hit        [out] -> True if ray intersects triangle at t > 0
-  !!   nearZero   [out] -> True if ray parameter t/det is near zero (point on triangle plane)
+  !! Watertight ray-triangle intersection (Woop, Benthin & Wald 2013).
+  !! Edge functions depend only on each edge's two vertices, so shared edges
+  !! between adjacent triangles produce bitwise-identical results (no gaps).
   !!
   subroutine rayTriangle(self, r, rayDir, v0, v1, v2, hit, nearZero)
     class(bezierVolume), intent(in)         :: self
     real(defReal), dimension(3), intent(in) :: r, rayDir, v0, v1, v2
     logical(defBool), intent(out)           :: hit, nearZero
-    real(defReal), dimension(3)             :: A, B, C
-    real(defReal)                           :: Ax, Ay, Bx, By, Cx, Cy
-    real(defReal)                           :: Az, Bz, Cz
-    real(defReal)                           :: e0, e1, e2, det, t
-    real(defReal)                           :: absDir1, absDir2, absDir3
-    integer(shortInt)                       :: kz, kx, ky
-    real(defReal)                           :: Sx, Sy, Sz
-    real(defReal), parameter                :: EPS = 1.0E-10_defReal
-    real(defReal), parameter                :: NEAR_ZERO_TOL = 1.0E-4_defReal
+    real(defReal), dimension(3) :: A, B, C
+    real(defReal) :: Ax, Ay, Az, Bx, By, Bz, Cx, Cy, Cz
+    real(defReal) :: e0, e1, e2, det, t
+    real(defReal) :: abs1, abs2, abs3, Sx, Sy, Sz
+    integer(shortInt) :: kz, kx, ky
+    real(defReal), parameter :: EPS           = 1.0E-10_defReal
+    real(defReal), parameter :: NEAR_ZERO_TOL = 1.0E-4_defReal
 
-    hit = .false.
+    hit      = .false.
     nearZero = .false.
 
-    ! Step 1: Find dominant axis of ray direction for coordinate permutation
-    absDir1 = abs(rayDir(1))
-    absDir2 = abs(rayDir(2))
-    absDir3 = abs(rayDir(3))
+    abs1 = abs(rayDir(1))
+    abs2 = abs(rayDir(2))
+    abs3 = abs(rayDir(3))
 
-    if (absDir1 > absDir2 .and. absDir1 > absDir3) then
-      kz = 1; kx = 2; ky = 3
-    else if (absDir2 > absDir3) then
-      kz = 2; kx = 3; ky = 1
+    if (abs1 > abs2 .and. abs1 > abs3) then
+      kz = 1;  kx = 2;  ky = 3
+    else if (abs2 > abs3) then
+      kz = 2;  kx = 3;  ky = 1
     else
-      kz = 3; kx = 1; ky = 2
+      kz = 3;  kx = 1;  ky = 2
     end if
 
-    ! Step 2: Shear constants to align ray with +z axis
     Sx = rayDir(kx) / rayDir(kz)
     Sy = rayDir(ky) / rayDir(kz)
-    Sz = ONE / rayDir(kz)
+    Sz = ONE        / rayDir(kz)
 
-    ! Step 3: Translate vertices relative to ray origin
-    A = v0 - r
-    B = v1 - r
-    C = v2 - r
+    A = v0 - r;  B = v1 - r;  C = v2 - r
 
-    ! Step 4: Shear and permute to ray-aligned coordinates
-    Ax = A(kx) - Sx * A(kz)
-    Ay = A(ky) - Sy * A(kz)
-    Bx = B(kx) - Sx * B(kz)
-    By = B(ky) - Sy * B(kz)
-    Cx = C(kx) - Sx * C(kz)
-    Cy = C(ky) - Sy * C(kz)
+    Ax = A(kx) - Sx * A(kz);  Ay = A(ky) - Sy * A(kz)
+    Bx = B(kx) - Sx * B(kz);  By = B(ky) - Sy * B(kz)
+    Cx = C(kx) - Sx * C(kz);  Cy = C(ky) - Sy * C(kz)
 
-    ! Step 5: Edge functions — each depends only on its two vertices
-    ! This is the key to watertightness: shared edges give identical results
-    e0 = Bx * Cy - By * Cx   ! edge v1-v2
-    e1 = Cx * Ay - Cy * Ax   ! edge v2-v0
-    e2 = Ax * By - Ay * Bx   ! edge v0-v1
+    e0 = Bx * Cy - By * Cx
+    e1 = Cx * Ay - Cy * Ax
+    e2 = Ax * By - Ay * Bx
 
-    ! Step 6: Check if point is inside triangle
-    ! All edge functions must have the same sign (or be zero)
-    ! Use a small tolerance so that near-zero edge values (point on/near edge)
-    ! are treated as zero — prevents both adjacent triangles rejecting the point
     if (e0 < -EPS .or. e1 < -EPS .or. e2 < -EPS) then
       if (e0 > EPS .or. e1 > EPS .or. e2 > EPS) return
     end if
 
-    ! Determinant
     det = e0 + e1 + e2
     if (abs(det) < EPS) then
       nearZero = .true.
       return
     end if
 
-    ! Step 7: Compute t (ray parameter) — only z-shear needed now
-    Az = Sz * A(kz)
-    Bz = Sz * B(kz)
-    Cz = Sz * C(kz)
-    t = e0 * Az + e1 * Bz + e2 * Cz
+    Az = Sz * A(kz);  Bz = Sz * B(kz);  Cz = Sz * C(kz)
+    t  = e0 * Az + e1 * Bz + e2 * Cz
 
-    ! Flag near-zero t: point lies on or very near the triangle plane
-    ! This is checked BEFORE the forward-direction filter so we detect
-    ! rejected-but-on-plane cases that cause the 0-hit degeneracy
     if (abs(t) < NEAR_ZERO_TOL * abs(det)) nearZero = .true.
 
-    ! Check forward intersection (accounting for sign of det)
     if (det > ZERO) then
       if (t < EPS * det) return
     else
@@ -1054,56 +1100,300 @@ contains
 
   end subroutine rayTriangle
 
+  ! ---------------------------------------------------------------------------
+  ! Module-level helper functions
+  ! ---------------------------------------------------------------------------
+
   !!
-  !! Return to uninitialised state
+  !! Collect all unique corner points from sub-patches of adjPatch that lie on
+  !! edge edgeOnAdj of the original patch, sorted by distance from ptA toward ptB.
+  !! Always includes ptA (first) and ptB (last) — buf has at least 2 entries.
   !!
+  !!
+  !! Collect T-junction vertices on one edge of sub-patch Si from finer sub-patches
+  !! of the same original patch (within-patch T-junction detection).
+  !!
+  !! eP_Si edge convention matches the patch edge numbering:
+  !!   1 = u=uMin (left),  2 = u=uMax (right)
+  !!   3 = v=vMin (bottom), 4 = v=vMax (top)
+  !!
+  !! ptA and ptB are the 3D end-points of Si's edge in the direction the polygon
+  !! fan expects them (matches the T1/T2 polygon winding in halfspace).
+  !!
+  !! Returns buf sorted ptA→ptB with all T-junction vertices inserted.
+  !! Always contains at least ptA and ptB.
+  !!
+  subroutine collectIntraPatchEdgeVerts(curPts, nCur, origPatch, uvRange, &
+                                         Si_idx, eP_Si, ptA, ptB, buf, nBuf)
+    real(defReal), dimension(:,:,:,:), intent(in) :: curPts
+    integer(shortInt), intent(in)                 :: nCur
+    integer(shortInt), dimension(:), intent(in)   :: origPatch
+    real(defReal), dimension(:,:), intent(in)     :: uvRange
+    integer(shortInt), intent(in)                 :: Si_idx, eP_Si
+    real(defReal), dimension(3), intent(in)       :: ptA, ptB
+    real(defReal), dimension(:,:), intent(out)    :: buf
+    integer(shortInt), intent(out)                :: nBuf
+
+    integer(shortInt) :: i, si, P
+    real(defReal), dimension(3)       :: pt1, pt2, edgeDir, tmpV
+    real(defReal), dimension(size(buf,1)) :: dotArr
+    real(defReal) :: tmpD, boundaryVal, pMin, pMax
+    logical(defBool) :: onEdge, isDup
+    real(defReal), parameter :: EV_TOL = 1.0E-10_defReal
+
+    P       = origPatch(Si_idx)
+    nBuf    = 0
+    edgeDir = ptB - ptA
+
+    ! UV boundary value and range for this edge of Si
+    select case (eP_Si)
+      case(1);  boundaryVal = uvRange(Si_idx,1);  pMin = uvRange(Si_idx,3);  pMax = uvRange(Si_idx,4)
+      case(2);  boundaryVal = uvRange(Si_idx,2);  pMin = uvRange(Si_idx,3);  pMax = uvRange(Si_idx,4)
+      case(3);  boundaryVal = uvRange(Si_idx,3);  pMin = uvRange(Si_idx,1);  pMax = uvRange(Si_idx,2)
+      case(4);  boundaryVal = uvRange(Si_idx,4);  pMin = uvRange(Si_idx,1);  pMax = uvRange(Si_idx,2)
+    end select
+
+    do i = 1, nCur
+      if (i == Si_idx) cycle
+      if (origPatch(i) /= P) cycle
+
+      ! Check that Sj shares Si's edge boundary and lies within Si's range
+      onEdge = .false.
+      select case (eP_Si)
+        case(1)
+          onEdge = (abs(uvRange(i,2) - boundaryVal) < EV_TOL) .and. &
+                   (uvRange(i,3) >= pMin - EV_TOL) .and. &
+                   (uvRange(i,4) <= pMax + EV_TOL)
+        case(2)
+          onEdge = (abs(uvRange(i,1) - boundaryVal) < EV_TOL) .and. &
+                   (uvRange(i,3) >= pMin - EV_TOL) .and. &
+                   (uvRange(i,4) <= pMax + EV_TOL)
+        case(3)
+          onEdge = (abs(uvRange(i,4) - boundaryVal) < EV_TOL) .and. &
+                   (uvRange(i,1) >= pMin - EV_TOL) .and. &
+                   (uvRange(i,2) <= pMax + EV_TOL)
+        case(4)
+          onEdge = (abs(uvRange(i,3) - boundaryVal) < EV_TOL) .and. &
+                   (uvRange(i,1) >= pMin - EV_TOL) .and. &
+                   (uvRange(i,2) <= pMax + EV_TOL)
+      end select
+      if (.not. onEdge) cycle
+
+      ! Extract the 2 corners of Sj that lie on the shared boundary
+      ! Si's e=1 (left) is adjacent to Sj's e=2 (right), etc.
+      select case (eP_Si)
+        case(1);  pt1 = curPts(i,4,1,:);  pt2 = curPts(i,4,4,:)
+        case(2);  pt1 = curPts(i,1,1,:);  pt2 = curPts(i,1,4,:)
+        case(3);  pt1 = curPts(i,1,4,:);  pt2 = curPts(i,4,4,:)
+        case(4);  pt1 = curPts(i,1,1,:);  pt2 = curPts(i,4,1,:)
+      end select
+
+      isDup = .false.
+      do si = 1, nBuf
+        if (norm2(buf(si,:) - pt1) < EV_TOL) then;  isDup = .true.;  exit;  end if
+      end do
+      if (.not. isDup .and. nBuf < size(buf,1)) then
+        nBuf = nBuf + 1;  buf(nBuf,:) = pt1
+      end if
+
+      isDup = .false.
+      do si = 1, nBuf
+        if (norm2(buf(si,:) - pt2) < EV_TOL) then;  isDup = .true.;  exit;  end if
+      end do
+      if (.not. isDup .and. nBuf < size(buf,1)) then
+        nBuf = nBuf + 1;  buf(nBuf,:) = pt2
+      end if
+    end do
+
+    if (nBuf < 2) then
+      nBuf = 2;  buf(1,:) = ptA;  buf(2,:) = ptB
+      return
+    end if
+
+    ! Insertion sort by dot product along edge direction ptA→ptB
+    do si = 1, nBuf
+      dotArr(si) = dot_product(buf(si,:) - ptA, edgeDir)
+    end do
+    do si = 2, nBuf
+      tmpV = buf(si,:);  tmpD = dotArr(si)
+      i = si - 1
+      do while (i >= 1 .and. dotArr(i) > tmpD)
+        buf(i+1,:) = buf(i,:);  dotArr(i+1) = dotArr(i)
+        i = i - 1
+      end do
+      buf(i+1,:) = tmpV;  dotArr(i+1) = tmpD
+    end do
+
+  end subroutine collectIntraPatchEdgeVerts
+
+  subroutine collectEdgeVerts(curPts, nCur, origPatch, uvRange, adjPatch, edgeOnAdj, &
+                              ptA, ptB, buf, nBuf)
+    real(defReal), dimension(:,:,:,:), intent(in) :: curPts
+    integer(shortInt), intent(in)                 :: nCur
+    integer(shortInt), dimension(:), intent(in)   :: origPatch
+    real(defReal), dimension(:,:), intent(in)     :: uvRange
+    integer(shortInt), intent(in)                 :: adjPatch, edgeOnAdj
+    real(defReal), dimension(3), intent(in)       :: ptA, ptB
+    real(defReal), dimension(:,:), intent(out)    :: buf
+    integer(shortInt), intent(out)                :: nBuf
+
+    integer(shortInt) :: i, si
+    logical(defBool)  :: onEdge, isDup
+    real(defReal), dimension(3) :: pt1, pt2, edgeDir, tmpV
+    real(defReal), dimension(size(buf,1)) :: dotArr
+    real(defReal) :: tmpD
+    real(defReal), parameter :: EV_TOL = 1.0E-10_defReal
+
+    nBuf = 0
+    edgeDir = ptB - ptA
+
+    do i = 1, nCur
+      if (origPatch(i) /= adjPatch) cycle
+
+      onEdge = .false.
+      select case (edgeOnAdj)
+        case(1);  onEdge = (uvRange(i,1) < EV_TOL)
+        case(2);  onEdge = (uvRange(i,2) > ONE - EV_TOL)
+        case(3);  onEdge = (uvRange(i,3) < EV_TOL)
+        case(4);  onEdge = (uvRange(i,4) > ONE - EV_TOL)
+      end select
+      if (.not. onEdge) cycle
+
+      select case (edgeOnAdj)
+        case(1);  pt1 = curPts(i,1,1,:);  pt2 = curPts(i,1,4,:)
+        case(2);  pt1 = curPts(i,4,1,:);  pt2 = curPts(i,4,4,:)
+        case(3);  pt1 = curPts(i,1,1,:);  pt2 = curPts(i,4,1,:)
+        case(4);  pt1 = curPts(i,1,4,:);  pt2 = curPts(i,4,4,:)
+      end select
+
+      isDup = .false.
+      do si = 1, nBuf
+        if (norm2(buf(si,:) - pt1) < EV_TOL) then;  isDup = .true.;  exit;  end if
+      end do
+      if (.not. isDup .and. nBuf < size(buf,1)) then
+        nBuf = nBuf + 1;  buf(nBuf,:) = pt1
+      end if
+
+      isDup = .false.
+      do si = 1, nBuf
+        if (norm2(buf(si,:) - pt2) < EV_TOL) then;  isDup = .true.;  exit;  end if
+      end do
+      if (.not. isDup .and. nBuf < size(buf,1)) then
+        nBuf = nBuf + 1;  buf(nBuf,:) = pt2
+      end if
+    end do
+
+    ! Fallback: if no sub-patches found, just return the two endpoints
+    if (nBuf < 2) then
+      nBuf = 2;  buf(1,:) = ptA;  buf(2,:) = ptB
+      return
+    end if
+
+    ! Insertion sort by dot product with edge direction (ptA → ptB)
+    do si = 1, nBuf
+      dotArr(si) = dot_product(buf(si,:) - ptA, edgeDir)
+    end do
+    do si = 2, nBuf
+      tmpV = buf(si,:);  tmpD = dotArr(si)
+      i = si - 1
+      do while (i >= 1 .and. dotArr(i) > tmpD)
+        buf(i+1,:) = buf(i,:);  dotArr(i+1) = dotArr(i)
+        i = i - 1
+      end do
+      buf(i+1,:) = tmpV;  dotArr(i+1) = tmpD
+    end do
+
+  end subroutine collectEdgeVerts
+
+  !!
+  !! Extract the 4 control points of edge e from a patch:
+  !!   e=1: u=0 boundary, row j=1, varying in v (C00 -> C01)
+  !!   e=2: u=1 boundary, row j=4, varying in v (C10 -> C11)
+  !!   e=3: v=0 boundary, col k=1, varying in u (C00 -> C10)
+  !!   e=4: v=1 boundary, col k=4, varying in u (C01 -> C11)
+  !!
+  pure function patchEdge(patch, e) result(edge)
+    real(defReal), dimension(4,4,3), intent(in) :: patch
+    integer(shortInt), intent(in)               :: e
+    real(defReal), dimension(4,3)               :: edge
+    integer(shortInt) :: k
+
+    select case(e)
+      case(1);  do k = 1, 4;  edge(k,:) = patch(1,k,:);  end do
+      case(2);  do k = 1, 4;  edge(k,:) = patch(4,k,:);  end do
+      case(3);  do k = 1, 4;  edge(k,:) = patch(k,1,:);  end do
+      case(4);  do k = 1, 4;  edge(k,:) = patch(k,4,:);  end do
+      case default;  edge = ZERO
+    end select
+
+  end function patchEdge
+
+  !!
+  !! Compute the De Casteljau midpoint (t=0.5) of a patch's boundary edge.
+  !!
+  pure function patchEdgeMid(patch, e) result(M)
+    real(defReal), dimension(4,4,3), intent(in) :: patch
+    integer(shortInt), intent(in)               :: e
+    real(defReal), dimension(3)                 :: M
+    real(defReal), dimension(4,3)               :: edge
+    real(defReal), dimension(3)                 :: p01, p12, p23, p012, p123
+
+    edge = patchEdge(patch, e)
+
+    p01  = HALF * (edge(1,:) + edge(2,:))
+    p12  = HALF * (edge(2,:) + edge(3,:))
+    p23  = HALF * (edge(3,:) + edge(4,:))
+    p012 = HALF * (p01 + p12)
+    p123 = HALF * (p12 + p23)
+    M    = HALF * (p012 + p123)
+
+  end function patchEdgeMid
+
+  ! ---------------------------------------------------------------------------
+  ! Kill and diagnostics
+  ! ---------------------------------------------------------------------------
+
   elemental subroutine kill(self)
     class(bezierVolume), intent(inout) :: self
 
-    ! Superclass
     call kill_super(self)
 
-    ! Local
     if (allocated(self % ctrlPts))    deallocate(self % ctrlPts)
+    if (allocated(self % weights))    deallocate(self % weights)
     if (allocated(self % allPtsFlat)) deallocate(self % allPtsFlat)
+    if (allocated(self % adj))        deallocate(self % adj)
+    if (allocated(self % adjEdge))    deallocate(self % adjEdge)
+
     self % numPatches = 0
     self % nAllPts    = 0
     self % aabb       = ZERO
 
   end subroutine kill
 
-  !!
-  !! Print diagnostic summary to stdout and close file
-  !! Call this at the end of the run to get the misclassification report
-  !!
   subroutine printBezierDiagnostics()
     real(defReal) :: pct
 
     if (diagTotal == 0) return
 
-    if (diagTotal > 0) then
-      pct = 100.0_defReal * real(diagMisclass, defReal) / real(diagTotal, defReal)
-    else
-      pct = ZERO
-    end if
+    pct = 100.0_defReal * real(diagMisclass, defReal) / real(diagTotal, defReal)
 
-    write(*, '(A)')          ''
-    write(*, '(A)')          '====== bezierVolume Diagnostic Report ======'
-    write(*, '(A, I12)')     'Total halfspace calls:  ', diagTotal
-    write(*, '(A, I12)')     'Misclassified points:   ', diagMisclass
+    write(*, '(A)')            ''
+    write(*, '(A)')            '====== bezierVolume Diagnostic Report ======'
+    write(*, '(A, I12)')      'Total halfspace calls:  ', diagTotal
+    write(*, '(A, I12)')      'Misclassified points:   ', diagMisclass
     write(*, '(A, F10.4, A)') 'Misclassification rate: ', pct, '%'
-    write(*, '(A)')          'Details written to: bezier_misclass.dat'
-    write(*, '(A)')          '============================================'
+    write(*, '(A)')            'Details written to: bezier_misclass.dat'
+    write(*, '(A)')            '============================================'
 
-    ! Write summary to file and close
     if (diagFileOpen) then
-      write(DIAG_UNIT, '(A)')          '# ---- Summary ----'
-      write(DIAG_UNIT, '(A, I12)')     '# Total calls:    ', diagTotal
-      write(DIAG_UNIT, '(A, I12)')     '# Misclassified:  ', diagMisclass
+      write(DIAG_UNIT, '(A)')            '# ---- Summary ----'
+      write(DIAG_UNIT, '(A, I12)')      '# Total calls:    ', diagTotal
+      write(DIAG_UNIT, '(A, I12)')      '# Misclassified:  ', diagMisclass
       write(DIAG_UNIT, '(A, F10.4, A)') '# Rate:           ', pct, '%'
       close(DIAG_UNIT)
       diagFileOpen = .false.
     end if
+
   end subroutine printBezierDiagnostics
 
 end module bezierVolume_class
