@@ -76,6 +76,7 @@ module eigenPhysicsPackage_class
   
   ! Bezier diagnostics         !!TO BE REMOVED!!
   use bezierVolume_class,             only : printBezierDiagnostics
+  use bezierShape_class,              only : printBezierShapeDiagnostics
 
   implicit none
   private
@@ -154,6 +155,7 @@ contains
     call self % collectResults()
 
     !! TO BE REMOVED !!
+    call printBezierShapeDiagnostics()
     call printBezierDiagnostics()
     call printNeuralDiagnostics()
 
