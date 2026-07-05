@@ -57,7 +57,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from model   import NeuralSDF
-from sampler import (load_scone_binary, generate_sphere_sdf,
+from sampler import (load_scone_binary, generate_sphere_sdf, generate_mesh_binary,
                      SdfDataset, make_train_val_split)
 from export  import export_weights, export_text
 
@@ -190,8 +190,12 @@ def train(model, train_loader, val_loader, epochs, lr, weight_decay, device, ver
     # Cosine annealing: decays lr from initial value down to eta_min over the
     # full training run, eliminating the oscillation caused by constant lr Adam.
     # For resumed runs, last_epoch re-positions the scheduler correctly.
+    # initial_lr must be set manually when optimizer state was not saved.
     scheduler = None
     if use_scheduler:
+        if start_epoch > 1:
+            for group in optimizer.param_groups:
+                group['initial_lr'] = group['lr']
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=epochs, eta_min=eta_min,
             last_epoch=start_epoch - 2 if start_epoch > 1 else -1
@@ -316,6 +320,8 @@ def parse_args():
                      help='SCONE sdfSampler binary output file')
     src.add_argument('--sphere', action='store_true',
                      help='Generate training data from analytic sphere SDF')
+    src.add_argument('--mesh', metavar='FILE',
+                     help='Mesh file (PLY/OBJ/STL); trimesh ray-casting provides inside/outside labels')
 
     p.add_argument('--radius', type=float, default=1.0)
     p.add_argument('--center', type=float, nargs=3, default=[0.0, 0.0, 0.0],
@@ -332,6 +338,8 @@ def parse_args():
                    help='Resume from a .pt checkpoint. --sphere or --input still required.')
 
     p.add_argument('--hidden-dim',   type=int,   default=128)
+    p.add_argument('--input-dim',    type=int,   default=3, choices=[2, 3],
+                   help='MLP input dimensionality (2 for z-invariant 2D shapes, 3 for full 3D)')
     p.add_argument('--num-layers',   type=int,   default=4)
     p.add_argument('--activation',   choices=['leakyrelu', 'relu', 'tanh'], default='leakyrelu')
     p.add_argument('--leaky-alpha',  type=float, default=0.01)
@@ -391,8 +399,8 @@ def main():
     # Install SIGTERM handler (WSL2/systemd may send this before SIGKILL)
     signal.signal(signal.SIGTERM, _sigterm_handler)
 
-    if not args.sphere and not args.input:
-        print("error: one of --sphere or --input is required", file=sys.stderr)
+    if not (args.sphere or args.input or args.mesh):
+        print("error: one of --sphere, --input, or --mesh is required", file=sys.stderr)
         sys.exit(1)
 
     torch.manual_seed(args.seed)
@@ -467,6 +475,18 @@ def main():
         points, sdfs, bbox = load_scone_binary(args.input)
         bbox_min = bbox['min']
         bbox_max = bbox['max']
+        if args.input_dim == 2:
+            points   = points[:, :2]
+            bbox_min = bbox_min[:2]
+            bbox_max = bbox_max[:2]
+    elif args.mesh:
+        if args.mode != 'binary':
+            print("WARNING: --mesh provides binary ±1 labels only; "
+                  "use --mode binary --loss bce for correct training.", file=sys.stderr)
+        if verbose:
+            print(f"\nGenerating mesh samples: {args.mesh} (n={args.n_samples:,})", flush=True)
+        points, sdfs, bbox_min, bbox_max = generate_mesh_binary(
+            args.mesh, args.n_samples, seed=args.seed)
     else:
         center = np.array(args.center, dtype=np.float64)
         r = args.radius
@@ -501,7 +521,22 @@ def main():
         train_ds.dataset.coords = train_ds.dataset.coords.float()
         train_ds.dataset.sdfs   = train_ds.dataset.sdfs.float()
 
-    pin = device.type == 'cuda'
+    # If the full dataset fits on the target device, move it there once and
+    # avoid per-batch CPU→GPU transfers entirely.  For 2M float32 samples the
+    # dataset is ~32 MB; an A100 has 80 GB so this is always safe on HPC.
+    dataset_bytes = (dataset.coords.nelement() + dataset.sdfs.nelement()) * \
+                    dataset.coords.element_size()
+    gpu_mem_bytes = torch.cuda.get_device_properties(device).total_memory \
+                    if device.type == 'cuda' else 0
+    pin_to_device = device.type == 'cuda' and dataset_bytes < gpu_mem_bytes * 0.25
+    if pin_to_device:
+        dataset.coords = dataset.coords.to(device)
+        dataset.sdfs   = dataset.sdfs.to(device)
+        if verbose:
+            print(f"  Dataset pinned to {device} "
+                  f"({dataset_bytes / 1e6:.0f} MB — no per-batch transfers)")
+
+    pin = device.type == 'cuda' and not pin_to_device
     train_loader = DataLoader(train_ds, batch_size=args.batch_size,
                               shuffle=True,  num_workers=0, pin_memory=pin)
     val_loader   = DataLoader(val_ds,   batch_size=args.batch_size,
@@ -513,10 +548,13 @@ def main():
     # ------------------------------------------------------------------
     # Model
     # ------------------------------------------------------------------
+    in_dim = resume_ckpt['in_dim'] if (resume_ckpt and 'in_dim' in resume_ckpt) \
+             else args.input_dim
     model = NeuralSDF(hidden_dim  = args.hidden_dim,
                       num_layers  = args.num_layers,
                       activation  = args.activation,
-                      leaky_alpha = args.leaky_alpha)
+                      leaky_alpha = args.leaky_alpha,
+                      in_dim      = in_dim)
     if dtype == torch.float64:
         model = model.double()
 
@@ -609,6 +647,7 @@ def main():
             ckpt_pt = f"{ckpt_stem}_ep{epoch:03d}{suffix}.pt"
             torch.save({
                 'model_state_dict': m_cpu.state_dict(),
+                'in_dim':      getattr(m_cpu, 'in_dim', 3),
                 'hidden_dim':  m_cpu.hidden_dim,
                 'num_layers':  m_cpu.num_layers,
                 'activation':  m_cpu.activation,

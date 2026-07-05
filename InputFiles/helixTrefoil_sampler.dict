@@ -1,0 +1,54 @@
+// sdfSampler input for helical trefoil bezierTwist surface
+//
+// bezierTwist applies a z-dependent rotation to the 2D trefoil control points,
+// giving a shape that completes one full 360-degree rotation over the twist
+// period. With twist=20 and minZ=-10/maxZ=10, the cross-section rotates from
+// 0 to 360 degrees across the full z extent.
+//
+// evaluate() returns 0 for bezierTwist, so sdfSampler auto-detects halfspace
+// mode and writes +/-1 labels. Train with:
+//   train.py --input helixTrefoil_train.bin --mode binary --loss bce
+
+nSamples     200000;
+outputFile   helixTrefoil_train.bin;
+seed         42;
+
+// Bbox: same x/y margin as 2D trefoil (+25% on control point extents ~+-4.1).
+// z covers full twist extent.
+bboxMin (-5.5 -4.0 -10.0);
+bboxMax ( 5.5  5.5  10.0);
+
+surface {
+  type bezierTwist;
+  id 99;
+  order 3;
+  minZ -10.0;
+  maxZ  10.0;
+  twist 20.0;
+  ctrlPts (
+     0.9          3.0          0.0
+     0.9          4.2          0.0
+    -0.9          4.2          0.0
+    -0.9          3.0          0.0
+    -0.9          3.0          0.0
+    -0.9          1.2          0.0
+    -1.48923048   0.17942286   0.0
+    -3.0480762   -0.72057714   0.0
+    -3.0480762   -0.72057714   0.0
+    -4.08730671  -1.32057714   0.0
+    -3.18730671  -2.87942286   0.0
+    -2.1480762   -2.27942286   0.0
+    -2.1480762   -2.27942286   0.0
+    -0.58923048  -1.37942286   0.0
+     0.58923048  -1.37942286   0.0
+     2.1480762   -2.27942286   0.0
+     2.1480762   -2.27942286   0.0
+     3.18730671  -2.87942286   0.0
+     4.08730671  -1.32057714   0.0
+     3.0480762   -0.72057714   0.0
+     3.0480762   -0.72057714   0.0
+     1.48923048   0.17942286   0.0
+     0.9          1.2          0.0
+     0.9          3.0          0.0
+  );
+}

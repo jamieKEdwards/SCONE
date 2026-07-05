@@ -1,0 +1,109 @@
+!! Neural surface eigenvalue run — Stanford Bunny, bare Pu-239
+!!
+!! Uses a trained MLP (bunny_bina_gpu, 4x256 BIN-A BCE, 5000 epochs, 2M samples)
+!! to represent the Stanford Bunny surface. Material is bare Pu-239 (Jezebel
+!! composition) surrounded by void.
+!!
+!! No CSG reference is available; this run produces a fission map showing the
+!! bunny shape and a k_eff estimate. Misclassification rate cannot be computed
+!! directly without a reference surface.
+!!
+!! Sign convention: neuralSurface halfspace returns TRUE (positive) = OUTSIDE.
+!!   cell surfaces(+neural) = outside bunny = void
+!!   cell surfaces(-neural) = inside bunny  = fuel (Pu-239)
+!!
+!! Bunny bbox in SCONE coords (cm): X [-11.0, 7.7], Y [1.8, 20.3], Z [-7.4, 7.1]
+!! Scaled (+35% vol, factor 1.2506): X [-13.4, 10.0], Y [-0.6, 22.6], Z [-9.2, 8.9]
+!! Outer box centred at (-1.7, 11.0, 0.0) cm.
+!!
+!! Run: ./Build/scone.out InputFiles/neuralBunny --omp $(nproc)
+
+type eigenPhysicsPackage;
+
+pop      100000;
+active   300;
+inactive 50;
+XSdata   ce;
+dataType ce;
+outputFile neuralBunny;
+outputFormat asciiJSON;
+
+collisionOperator { neutronCE { type neutronCEstd; } }
+
+transportOperator { type transportOperatorDT; }
+
+inactiveTally {}
+
+activeTally {
+  display (k_eff);
+  norm fiss;
+  normVal 100.0;
+  k_eff { type keffAnalogClerk; }
+
+  fiss { type collisionClerk; response (fiss); fiss { type macroResponse; MT -6; } }
+
+  fluxSpectrum { type collisionClerk;
+    map { type energyMap; grid log; min 1.0E-11; max 20.0; N 1000; }
+    response (flux);
+    flux { type fluxResponse; }
+  }
+
+  fissMapXY { type collisionClerk;
+    map { type multiMap; maps (mapX mapY);
+         mapX { type spaceMap; axis x; grid lin; min -15.0; max 12.0; N 500; }
+         mapY { type spaceMap; axis y; grid lin; min -2.0; max 24.0; N 500; }
+         }
+    response (fission);
+    fission { type macroResponse; MT -6; }
+  }
+
+  fissMapXZ { type collisionClerk;
+    map { type multiMap; maps (mapX mapZ);
+         mapX { type spaceMap; axis x; grid lin; min -15.0; max 12.0; N 500; }
+         mapZ { type spaceMap; axis z; grid lin; min -11.0; max 11.0; N 500; }
+         }
+    response (fission);
+    fission { type macroResponse; MT -6; }
+  }
+}
+
+geometry {
+  type geometryStd;
+  boundary (0 0 0 0 0 0);
+  graph { type shrunk; }
+
+  surfaces {
+    outerBox { id 1; type box; origin (-1.7 11.0 0.0); halfwidth (14.0 14.0 11.0); }
+
+    neural { id 2; type neuralSurface;
+             weightFile /home/jamie/SCONE/weights/bunny_bina_gpu_scaled; }
+  }
+
+  cells {
+    outer { type simpleCell; id 10; surfaces (2);  filltype mat; material void; }
+    fuel  { type simpleCell; id 11; surfaces (-2); filltype mat; material fuel; }
+  }
+
+  universes {
+    root { id 1; type rootUniverse; border 1; fill u<2>; }
+    uni  { id 2; type cellUniverse; cells (10 11); }
+  }
+}
+
+nuclearData {
+  handles {
+    ce { type aceNeutronDatabase; aceLibrary /home/jamie/nuclearData/XSdata_jeff311/jeff311.aceXS; }
+  }
+  materials {
+    fuel {
+      temp 273;
+      composition {
+        94239.03  0.037047;
+        94240.03  0.0017512;
+        94241.03  0.00011674;
+        31069.03  0.00083603;
+        31071.03  0.00053917;
+      }
+    }
+  }
+}

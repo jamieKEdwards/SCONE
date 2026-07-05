@@ -1,0 +1,48 @@
+// sdfSampler input for Lightbridge trefoil bezierShape
+//
+// bezierShape is a 2D extruded surface -- halfspace depends only on x,y.
+// z-extent of bbox is kept thin (+-0.5) since z has no effect on the
+// halfspace result; all samples within this slab are representative.
+//
+// Auto-detected as halfspace mode (evaluate() returns 0 for bezierShape).
+// Train with: train.py --input trefoil_train.bin --mode binary --loss bce
+
+nSamples     200000;
+outputFile   trefoil_train.bin;
+seed         42;
+
+// Bbox covers the trefoil (+25% margin around control point extents ~+-4.1)
+bboxMin (-5.5 -4.0 -0.5);
+bboxMax ( 5.5  5.5  0.5);
+
+surface {
+  type bezierShape;
+  id 99;
+  order 3;
+  ctrlPts (
+     0.9          3.0          0.0
+     0.9          4.2          0.0
+    -0.9          4.2          0.0
+    -0.9          3.0          0.0
+    -0.9          3.0          0.0
+    -0.9          1.2          0.0
+    -1.48923048   0.17942286   0.0
+    -3.0480762   -0.72057714   0.0
+    -3.0480762   -0.72057714   0.0
+    -4.08730671  -1.32057714   0.0
+    -3.18730671  -2.87942286   0.0
+    -2.1480762   -2.27942286   0.0
+    -2.1480762   -2.27942286   0.0
+    -0.58923048  -1.37942286   0.0
+     0.58923048  -1.37942286   0.0
+     2.1480762   -2.27942286   0.0
+     2.1480762   -2.27942286   0.0
+     3.18730671  -2.87942286   0.0
+     4.08730671  -1.32057714   0.0
+     3.0480762   -0.72057714   0.0
+     3.0480762   -0.72057714   0.0
+     1.48923048   0.17942286   0.0
+     0.9          1.2          0.0
+     0.9          3.0          0.0
+  );
+}

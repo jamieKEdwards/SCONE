@@ -1,0 +1,120 @@
+!! Neural surface eigenvalue run — 3D helical trefoil
+!!
+!! Drop-in replacement for helixTrefoil_bezier using a trained MLP
+!! (helixTrefoil_bina, 4x128 BIN-A BCE, 1000 epochs, 200k samples).
+!!
+!! Sign convention: neuralSurface halfspace returns TRUE (positive) = OUTSIDE.
+!!   cell surfaces(+neural) = outside helix = water
+!!   cell surfaces(-neural) = inside helix  = fuel
+!!
+!! Compare keff and fissMapXY/XZ/3D against helixTrefoil_bezier.
+!!
+!! Run: ./Build/scone.out InputFiles/neuralHelixTrefoil --omp $(nproc)
+
+type eigenPhysicsPackage;
+
+pop      100000;
+active   300;
+inactive 50;
+XSdata   ce;
+dataType ce;
+outputFile neuralHelixTrefoil;
+outputFormat asciiJSON;
+
+collisionOperator { neutronCE { type neutronCEstd; } }
+
+transportOperator { type transportOperatorDT; }
+
+inactiveTally {}
+
+activeTally {
+  display (k_eff);
+  norm fiss;
+  normVal 100.0;
+  k_eff { type keffAnalogClerk; }
+
+  fiss { type collisionClerk; response (fiss); fiss { type macroResponse; MT -6; } }
+
+  fluxSpectrum { type collisionClerk;
+    map { type energyMap; grid log; min 1.0E-11; max 20.0; N 1000; }
+    response (flux);
+    flux { type fluxResponse; }
+  }
+
+  fissMapXY { type collisionClerk;
+    map { type multiMap; maps (mapX mapY);
+         mapX { type spaceMap; axis x; grid lin; min -5.0; max 5.0; N 100; }
+         mapY { type spaceMap; axis y; grid lin; min -5.0; max 5.0; N 100; }
+         }
+    response (fission);
+    fission { type macroResponse; MT -6; }
+  }
+
+  fissMapXZ { type collisionClerk;
+    map { type multiMap; maps (mapX mapZ);
+         mapX { type spaceMap; axis x; grid lin; min -5.0; max 5.0; N 100; }
+         mapZ { type spaceMap; axis z; grid lin; min -10.0; max 10.0; N 100; }
+         }
+    response (fission);
+    fission { type macroResponse; MT -6; }
+  }
+
+  fissMap3D { type collisionClerk;
+    map { type multiMap; maps (mapX mapY mapZ);
+         mapX { type spaceMap; axis x; grid lin; min -5.0; max 5.0; N 30; }
+         mapY { type spaceMap; axis y; grid lin; min -5.0; max 5.0; N 30; }
+         mapZ { type spaceMap; axis z; grid lin; min -10.0; max 10.0; N 40; }
+         }
+    response (fission);
+    fission { type macroResponse; MT -6; }
+  }
+}
+
+geometry {
+  type geometryStd;
+  boundary (1 1 1 1 1 1);
+  graph { type shrunk; }
+
+  surfaces {
+    outerBox { id 1; type box; origin (0.0 0.0 0.0); halfwidth (5.5 5.5 10.0); }
+
+    neural { id 2; type neuralSurface;
+             weightFile /home/jamie/SCONE/weights/helixTrefoil_bina; }
+  }
+
+  cells {
+    water { type simpleCell; id 10; surfaces (2);  filltype mat; material water; }
+    fuel  { type simpleCell; id 11; surfaces (-2); filltype mat; material fuel;  }
+  }
+
+  universes {
+    root { id 1; type rootUniverse; border 1; fill u<2>; }
+    uni  { id 2; type cellUniverse; cells (10 11); }
+  }
+}
+
+nuclearData {
+  handles {
+    ce { type aceNeutronDatabase; aceLibrary /home/jamie/nuclearData/XSdata_jeff311/jeff311.aceXS; }
+  }
+  materials {
+    numberOfGroups 69;
+
+    water {
+      temp 99;
+      composition {
+        1001.06    4.7240E-02;
+        8016.06    2.3620E-02;
+      }
+    }
+
+    fuel {
+      temp 99;
+      composition {
+        92235.12    3.0000E-04;
+        92238.12    2.0000E-02;
+         8016.12    4.5100E-02;
+      }
+    }
+  }
+}

@@ -52,14 +52,18 @@ class NeuralSDF(nn.Module):
         Linear(128, 1)   + tanh * sdf_scale
     """
 
-    def __init__(self, hidden_dim=128, num_layers=4, activation='leakyrelu', leaky_alpha=0.01):
+    def __init__(self, hidden_dim=128, num_layers=4, activation='leakyrelu', leaky_alpha=0.01,
+                 in_dim=3):
         super().__init__()
 
         if num_layers < 2:
             raise ValueError("num_layers must be >= 2 (at least one hidden + output layer)")
         if activation not in _ACTIVATION_NAMES:
             raise ValueError(f"activation must be one of {list(_ACTIVATION_NAMES)}")
+        if in_dim not in (2, 3):
+            raise ValueError("in_dim must be 2 or 3")
 
+        self.in_dim        = in_dim
         self.hidden_dim    = hidden_dim
         self.num_layers    = num_layers
         self.activation    = activation
@@ -68,11 +72,11 @@ class NeuralSDF(nn.Module):
 
         # Build layer list
         layers = []
-        in_dim = 3
+        _first = in_dim
         for i in range(num_layers):
             out_dim = hidden_dim if i < num_layers - 1 else 1
-            layers.append(nn.Linear(in_dim, out_dim))
-            in_dim = hidden_dim
+            layers.append(nn.Linear(_first, out_dim))
+            _first = hidden_dim
 
         self.linear_layers = nn.ModuleList(layers)
 

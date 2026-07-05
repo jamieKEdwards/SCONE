@@ -1,0 +1,115 @@
+type eigenPhysicsPackage;
+
+pop      100000;
+active   300;
+inactive 50;
+XSdata ce;
+dataType ce;
+outputFile neuralTrefoil;
+
+outputFormat asciiJSON;
+
+collisionOperator { neutronCE { type neutronCEstd; } }
+
+transportOperator { type transportOperatorDT; }
+
+inactiveTally {}
+
+activeTally {
+  display (k_eff);
+  norm fiss;
+  normVal 100.0;
+  k_eff { type keffAnalogClerk; }
+
+  fiss { type collisionClerk; response (fiss); fiss { type macroResponse; MT -6; } }
+
+  fluxSpectrum { type collisionClerk;
+    map { type energyMap; grid log; min 1.0E-11; max 20.0; N 1000; }
+    response (flux);
+    flux { type fluxResponse; }
+  }
+
+  fissMap { type collisionClerk;
+    map { type multiMap; maps (map1 map2);
+         map1 { type spaceMap; axis x; grid lin; min -4.5; max 4.5; N 1000; }
+         map2 { type spaceMap; axis y; grid lin; min -4.5; max 4.5; N 1000; }
+         }
+    response (fission);
+    fission { type macroResponse; MT -6; }
+  }
+
+  fluxMap { type collisionClerk;
+    map { type multiMap; maps (map1 map2 map3);
+         map1 { type spaceMap; axis x; grid lin; min -4.5; max 4.5; N 1000; }
+         map2 { type spaceMap; axis y; grid lin; min -4.5; max 4.5; N 1000; }
+         map3 { type energyMap; grid unstruct; bins (1.0e-9 1.0e-3 20.0); }
+         }
+    response (f);
+    f { type fluxResponse; }
+  }
+}
+
+geometry {
+  type geometryStd;
+  boundary (1 1 1 1 0 0);
+  graph { type shrunk; }
+
+  surfaces {
+    squareBound { id 1; type zSquareCylinder; origin (0.0 0.0 0.0); halfwidth (4.5 4.5 0.0); }
+
+    // Neural surface replacing bezierShape trefoil.
+    // Sign convention: neuralSurface TRUE = MLP > 0 = outside trefoil.
+    // Cell signs are flipped relative to bezier_test to account for this.
+    neural { id 99; type neuralSurface;
+             weightFile /home/jamie/SCONE/weights/trefoil_bina_2d;
+             refFlip 1;
+             diagEnabled 1;
+             refSurface { type bezierShape; id 999; order 3; ctrlPts (
+               0.9  3  0    0.9  4.2  0    -0.9  4.2  0    -0.9  3  0
+               -0.9  3  0    -0.9  1.2  0    -1.48923048  0.17942286  0    -3.0480762  -0.72057714  0
+               -3.0480762  -0.72057714  0    -4.08730671  -1.32057714  0    -3.18730671  -2.87942286  0    -2.1480762  -2.27942286  0
+               -2.1480762  -2.27942286  0    -0.58923048  -1.37942286  0    0.58923048  -1.37942286  0    2.1480762  -2.27942286  0
+               2.1480762  -2.27942286  0    3.18730671  -2.87942286  0    4.08730671  -1.32057714  0    3.0480762  -0.72057714  0
+               3.0480762  -0.72057714  0    1.48923048  0.17942286  0    0.9  1.2  0    0.9  3  0
+             ); }
+    }
+  }
+
+  cells {
+    // neuralSurface (99) = positive halfspace = MLP > 0 = outside = water
+    // neuralSurface (-99) = negative halfspace = MLP < 0 = inside  = fuel
+    cell1 { type simpleCell; id 10; surfaces (99);  filltype mat; material water; }
+    cell2 { type simpleCell; id 11; surfaces (-99); filltype mat; material fuel;  }
+  }
+
+  universes {
+    root { id 1; type rootUniverse; border 1; fill u<2>; }
+    uni  { id 2; type cellUniverse; cells (10 11); }
+  }
+}
+
+nuclearData {
+  handles {
+    ce { type aceNeutronDatabase; aceLibrary /home/jamie/nuclearData/XSdata_jeff311/jeff311.aceXS; }
+  }
+  materials {
+    numberOfGroups 69;
+
+    water {
+      temp 99;
+      composition {
+        1001.06    4.7240E-02;
+        8016.06    2.3620E-02;
+      }
+    }
+
+    fuel {
+      temp 99;
+      composition {
+        92235.12    3.0000E-04;
+        92238.12    2.0000E-02;
+         8016.12    4.5100E-02;
+      }
+    }
+  }
+}

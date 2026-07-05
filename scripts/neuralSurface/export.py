@@ -60,12 +60,18 @@ def export_weights(model, filename, bbox_min, bbox_max, test_point=None):
         test_point = 0.5 * (bbox_min + bbox_max)
     test_point = np.asarray(test_point, dtype=np.float64)
 
-    # Evaluate model at test point (normalised coordinates)
-    test_point_norm = _normalise(test_point, bbox_min, bbox_max)
+    in_dim = getattr(model, 'in_dim', 3)
+
+    # Pad bbox and test_point to 3 elements (Fortran reader always reads 3)
+    bbox_min_3 = np.zeros(3); bbox_min_3[:in_dim] = bbox_min[:in_dim]
+    bbox_max_3 = np.ones(3);  bbox_max_3[:in_dim] = bbox_max[:in_dim]
+    test_point_3 = np.zeros(3); test_point_3[:in_dim] = test_point[:in_dim]
+
+    # Evaluate model at test point using only in_dim coordinates
+    test_point_norm = _normalise(test_point[:in_dim], bbox_min[:in_dim], bbox_max[:in_dim])
     model.eval()
     with torch.no_grad():
         x = torch.tensor(test_point_norm, dtype=torch.float64).unsqueeze(0)
-        # Temporarily convert model to float64 for evaluation
         model_f64 = _to_float64(model)
         test_output = float(model_f64(x).item())
 
@@ -73,19 +79,19 @@ def export_weights(model, filename, bbox_min, bbox_max, test_point=None):
         # Header
         f.write(struct.pack('<i', MAGIC_NUMBER))
         f.write(struct.pack('<i', FORMAT_VERSION))
-        f.write(struct.pack('<i', 3))                          # input_dim
+        f.write(struct.pack('<i', in_dim))                     # input_dim
         f.write(struct.pack('<i', model.hidden_dim))
         f.write(struct.pack('<i', model.num_layers))
         f.write(struct.pack('<i', model.activation_type_code))
         f.write(struct.pack('<d', model.leaky_alpha))
         f.write(struct.pack('<d', model.sdf_scale))
 
-        # Normalisation bounding box
-        f.write(bbox_min.tobytes())   # 3 × float64
-        f.write(bbox_max.tobytes())
+        # Normalisation bounding box (always 3 × float64 for Fortran reader)
+        f.write(bbox_min_3.tobytes())
+        f.write(bbox_max_3.tobytes())
 
-        # Embedded test vector
-        f.write(test_point.tobytes())
+        # Embedded test vector (always 3 × float64 for Fortran reader)
+        f.write(test_point_3.tobytes())
         f.write(struct.pack('<d', test_output))
 
         # Layer weights and biases

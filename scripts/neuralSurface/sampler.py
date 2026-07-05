@@ -159,6 +159,119 @@ def generate_sphere_sdf(n_samples, radius, center, bbox_min, bbox_max,
 
 
 # ---------------------------------------------------------------------------
+# Mesh-based binary oracle (trimesh)
+# ---------------------------------------------------------------------------
+
+def generate_mesh_binary(mesh_path, n_samples, near_fraction=0.65,
+                         near_distance_rel=0.05, bbox_padding=0.1, seed=42,
+                         scale=1.0):
+    """
+    Generate binary inside/outside training samples for a mesh geometry.
+
+    Uses trimesh ray-casting to label points as inside (-1) or outside (+1),
+    matching the SCONE halfspace convention (positive = outside).
+    near_fraction of samples are placed near the surface by sampling random
+    face points and perturbing along the outward face normal; the remainder
+    are drawn uniformly from the padded bounding box.
+
+    Args:
+        mesh_path         : Path to mesh file (PLY, OBJ, STL, etc.)
+        n_samples         : Total number of samples to generate
+        near_fraction     : Fraction of samples placed near the surface (default 0.65)
+        near_distance_rel : Near-surface band width as a fraction of the mesh
+                            bounding-box diagonal (default 0.05)
+        bbox_padding      : Fractional padding added to mesh bounds on each side
+                            for the sampling/normalisation bbox (default 0.1)
+        seed              : Random seed
+        scale             : Multiply all mesh coordinates by this factor before
+                            sampling. Use scale=100 to convert metres to cm so
+                            that the output bbox matches SCONE coordinate units.
+
+    Returns:
+        points   : ndarray (N, 3) coordinates in scaled units
+        labels   : ndarray (N,)   binary labels: -1 inside, +1 outside
+        bbox_min : ndarray (3,)   normalisation bounding box minimum (scaled units)
+        bbox_max : ndarray (3,)   normalisation bounding box maximum (scaled units)
+    """
+    try:
+        import trimesh
+    except ImportError:
+        raise ImportError(
+            "trimesh is required for mesh data generation. Install with: pip install trimesh")
+
+    mesh = trimesh.load(mesh_path, force='mesh')
+    if not isinstance(mesh, trimesh.Trimesh):
+        raise ValueError(f"Could not load a single triangle mesh from '{mesh_path}'")
+
+    if scale != 1.0:
+        mesh.apply_scale(scale)
+
+    if not mesh.is_watertight:
+        import warnings
+        warnings.warn(
+            f"Mesh '{mesh_path}' is not watertight — inside/outside labels may be "
+            "unreliable near open boundaries or concave regions.",
+            UserWarning)
+
+    extents  = mesh.bounds[1] - mesh.bounds[0]
+    pad      = bbox_padding * extents
+    bbox_min = mesh.bounds[0] - pad
+    bbox_max = mesh.bounds[1] + pad
+
+    near_distance = near_distance_rel * np.linalg.norm(extents)
+
+    rng    = np.random.default_rng(seed)
+    n_near = int(n_samples * near_fraction)
+    n_vol  = n_samples - n_near
+
+    # Volumetric samples: uniform in padded bbox
+    pts_vol = rng.uniform(bbox_min, bbox_max, size=(n_vol, 3))
+
+    # Near-surface samples: random face points perturbed along the outward normal
+    face_idx = rng.integers(0, len(mesh.faces), size=n_near)
+    r1 = rng.uniform(0.0, 1.0, size=n_near)
+    r2 = rng.uniform(0.0, 1.0, size=n_near)
+    flip = r1 + r2 > 1.0
+    r1[flip] = 1.0 - r1[flip]
+    r2[flip] = 1.0 - r2[flip]
+    r3 = 1.0 - r1 - r2
+
+    v0 = mesh.vertices[mesh.faces[face_idx, 0]]
+    v1 = mesh.vertices[mesh.faces[face_idx, 1]]
+    v2 = mesh.vertices[mesh.faces[face_idx, 2]]
+    surface_pts  = r1[:, None] * v0 + r2[:, None] * v1 + r3[:, None] * v2
+    face_normals = mesh.face_normals[face_idx]
+    perturb      = rng.uniform(-near_distance, near_distance, size=n_near)
+    pts_near     = surface_pts + face_normals * perturb[:, None]
+
+    points = np.vstack([pts_vol, pts_near])
+
+    # Label: trimesh.contains uses ray-casting; True → inside → -1
+    # Batched to keep peak RAM under control.  Without the Embree backend the
+    # NumPy fallback materialises (n_rays × n_triangles × 3) float64 values per
+    # call, so the batch size must be chosen to cap that at ~240 MB.
+    import trimesh.ray as _tr
+    _embree = getattr(_tr, 'has_embree', False) or getattr(_tr, 'has_pyembree', False)
+    if not _embree:
+        import warnings
+        warnings.warn(
+            "embreex is not installed; mesh.contains() will use the slow, "
+            "memory-heavy NumPy fallback. Install with: pip install embreex",
+            RuntimeWarning)
+        batch_size = max(100, 10_000_000 // max(len(mesh.faces), 1))
+    else:
+        batch_size = 50_000
+
+    inside = np.empty(len(points), dtype=bool)
+    for i in range(0, len(points), batch_size):
+        inside[i:i + batch_size] = mesh.contains(points[i:i + batch_size])
+    labels = np.where(inside, -1.0, 1.0)
+
+    idx = rng.permutation(len(points))
+    return points[idx], labels[idx], bbox_min, bbox_max
+
+
+# ---------------------------------------------------------------------------
 # PyTorch Dataset
 # ---------------------------------------------------------------------------
 
