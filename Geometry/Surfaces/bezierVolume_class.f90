@@ -35,13 +35,22 @@ module bezierVolume_class
   !!   1. AABB rejection: outside bounding box -> outside
   !!   2. Global GJK rejection: outside convex hull of all control points -> outside
   !!   3. Selective subdivision: only subdivide patches whose GJK hull contains the
-  !!      query point. Track which original patches were subdivided.
-  !!   4. Build watertight triangle mesh:
-  !!      - Subdivided patches: use corner triangles of all their sub-patches.
-  !!      - Unsubdivided patches: use the standard 2 corner triangles, but for any
-  !!        edge adjacent to a subdivided patch, insert the De Casteljau midpoint of
-  !!        that boundary edge as a T-junction vertex (splitting the affected triangle
-  !!        into 2 or 3 triangles). This closes gaps where subdivision ends.
+  !!      query point. Track which original patches were subdivided. If no patch's
+  !!      hull contains the point (typically floating-point precision on an
+  !!      already-tight, deeply-subdivided hull, near a shared seam), fall back to
+  !!      AABB-only selection, scoped to patches already hull-selected this call or
+  !!      adjacent to one (everHullSelected) so unrelated patches are not pulled in
+  !!      by loose bounding-box coincidence.
+  !!   4. Build watertight triangle mesh via polygon-fan triangulation:
+  !!      - Subdivided patches: fan each sub-patch, collecting T-junction vertices
+  !!        both within the same original patch (collectIntraPatchEdgeVerts) and,
+  !!        along the original patch's true outer boundary, from an adjacent patch
+  !!        that was ALSO independently subdivided (mergeEdgeVerts) -- two adjacent
+  !!        patches subdivided under the same query point are not otherwise
+  !!        synchronised, so without this their independent splits can leave a gap.
+  !!      - Unsubdivided patches: fan from C00, collecting T-junction vertices from
+  !!        any subdivided neighbour (collectEdgeVerts) so the fan threads through
+  !!        every vertex the neighbour introduced along the shared edge.
   !!   5. Ray cast against the resulting watertight triangle mesh (Woop et al. 2013).
   !!
   !! Patch adjacency is precomputed at init by matching shared boundary control points.
@@ -323,6 +332,13 @@ contains
 
     ! Subdivision tracking
     logical(defBool), dimension(self % numPatches) :: wasSubdivided
+    ! Original patches that have passed the STRICT hull test at least once this
+    ! call. Used to scope the AABB-only fallback (see Step 3) to patches actually
+    ! adjacent to the region of interest, instead of scanning every patch in the
+    ! model by loose bounding-box coincidence.
+    logical(defBool), dimension(self % numPatches) :: everHullSelected
+    logical(defBool) :: fallbackEligible
+    integer(shortInt) :: fbP, fbE, fbAdjP
 
     ! Triangle mesh for ray cast
     real(defReal), dimension(:,:,:), allocatable :: tris
@@ -344,6 +360,16 @@ contains
     real(defReal), dimension(MAX_TJ_BUF, 3) :: e1buf, e2buf, e3buf, e4buf
     real(defReal), dimension(MAX_TJ_BUF)    :: e1dot, e2dot, e3dot, e4dot
     integer(shortInt) :: n1, n2, n3, n4
+    ! Cross-patch merge buffer: when a subdivided patch's edge is on the ORIGINAL
+    ! patch's outer boundary and the adjacent original patch was ALSO subdivided,
+    ! neither side's independent quadtree refinement is synchronised with the
+    ! other along their shared edge. collectIntraPatchEdgeVerts only ever looks
+    ! within the same original patch, so it cannot see the neighbour's split
+    ! points. mergeXPatchBuf pulls the neighbour's boundary vertices in via
+    ! collectEdgeVerts and merges them into the same buffer used for the fan,
+    ! so both sides' triangulations reference an identical vertex set.
+    real(defReal), dimension(MAX_TJ_BUF, 3) :: xBuf
+    integer(shortInt) :: nX, adjP2, adjE2
     logical(defBool) :: onEdge, isDup
     real(defReal), dimension(3) :: pt1, pt2, tmpV3
     real(defReal) :: tmpDot, u0, u1, v0, v1, um, vm
@@ -386,6 +412,7 @@ contains
       uvRange(i, :) = (/ ZERO, ONE, ZERO, ONE /)
     end do
     wasSubdivided = .false.
+    everHullSelected = .false.
 
     do subdivision = 1, MAX_SUBDIVISIONS
 
@@ -406,15 +433,48 @@ contains
         if (pointInConvexHull(patchPts, 16, r)) then
           needsSubdiv(i) = .true.
           nNeed = nNeed + 1
+          everHullSelected(origPatch(i)) = .true.
         end if
       end do
 
       if (nNeed == 0) then
         ! GJK found no patch: the query point lies on a patch boundary where no
-        ! single patch's convex hull strictly contains it. Fall back to AABB-only
-        ! selection so boundary points still trigger subdivision.
+        ! single patch's convex hull strictly contains it (typically floating-point
+        ! precision on an already-tight, deeply-subdivided hull). Fall back to
+        ! AABB-only selection so boundary points still trigger subdivision.
+        !
+        ! Scope: if any original patch has EVER passed the strict hull test this
+        ! call, restrict the fallback to patches that are that patch (still-live
+        ! sub-patches of it) or genuinely adjacent to it -- not every patch in the
+        ! model. An unscoped scan pulls in totally unrelated patches purely by
+        ! loose bounding-box coincidence (confirmed 2026-08-01 on Gumbo: patch 15
+        ! was pulled into subdivision this way despite its own hull never once
+        ! containing the query point, then only ever refined one level deep while
+        ! its genuine neighbour kept refining much further -- a mismatch that
+        ! opened a real gap between them; see bezierVolume_status.md).
+        ! On the first round with no prior hull match at all, there is no adjacency
+        ! information yet to scope by, so fall back to the original unrestricted
+        ! scan (matches pre-fix behaviour for that narrow case).
         do i = 1, nCur
-          if (self % inPatchAABB(curPts(i,:,:,:), r)) then
+          if (.not. self % inPatchAABB(curPts(i,:,:,:), r)) cycle
+          fbP = origPatch(i)
+          if (.not. any(everHullSelected)) then
+            ! no scoping info yet: accept any AABB match
+            fallbackEligible = .true.
+          else if (everHullSelected(fbP)) then
+            ! candidate's own original patch already hull-selected
+            fallbackEligible = .true.
+          else
+            fallbackEligible = .false.
+            ! scan the 4 neighbours of fbP for a hull-selected one
+            do fbE = 1, 4
+              fbAdjP = self % adj(fbP, fbE)
+              if (fbAdjP > 0) then
+                if (everHullSelected(fbAdjP)) fallbackEligible = .true.
+              end if
+            end do
+          end if
+          if (fallbackEligible) then
             needsSubdiv(i) = .true.
             nNeed = nNeed + 1
           end if
@@ -519,6 +579,55 @@ contains
                                           C00, C10, e3buf, n3)
           call collectIntraPatchEdgeVerts(curPts, nCur, origPatch, uvRange, i, 4, &
                                           C01, C11, e4buf, n4)
+
+          ! Reconcile against an ALSO-subdivided neighbour along P's true outer
+          ! boundary edges (see xBuf declaration comment above). Skipped for edges
+          ! internal to P (shared with another sub-patch of the same original
+          ! patch) -- those are already handled by collectIntraPatchEdgeVerts above.
+          if (edgeOnOuterBoundary(uvRange, i, 1)) then
+            adjP2 = self % adj(P, 1)
+            if (adjP2 > 0) then
+              if (wasSubdivided(adjP2)) then
+                adjE2 = self % adjEdge(P, 1)
+                call collectEdgeVerts(curPts, nCur, origPatch, uvRange, adjP2, adjE2, &
+                                      C00, C01, xBuf, nX)
+                call mergeEdgeVerts(e1buf, n1, xBuf, nX, C00, C01)
+              end if
+            end if
+          end if
+          if (edgeOnOuterBoundary(uvRange, i, 2)) then
+            adjP2 = self % adj(P, 2)
+            if (adjP2 > 0) then
+              if (wasSubdivided(adjP2)) then
+                adjE2 = self % adjEdge(P, 2)
+                call collectEdgeVerts(curPts, nCur, origPatch, uvRange, adjP2, adjE2, &
+                                      C10, C11, xBuf, nX)
+                call mergeEdgeVerts(e2buf, n2, xBuf, nX, C10, C11)
+              end if
+            end if
+          end if
+          if (edgeOnOuterBoundary(uvRange, i, 3)) then
+            adjP2 = self % adj(P, 3)
+            if (adjP2 > 0) then
+              if (wasSubdivided(adjP2)) then
+                adjE2 = self % adjEdge(P, 3)
+                call collectEdgeVerts(curPts, nCur, origPatch, uvRange, adjP2, adjE2, &
+                                      C00, C10, xBuf, nX)
+                call mergeEdgeVerts(e3buf, n3, xBuf, nX, C00, C10)
+              end if
+            end if
+          end if
+          if (edgeOnOuterBoundary(uvRange, i, 4)) then
+            adjP2 = self % adj(P, 4)
+            if (adjP2 > 0) then
+              if (wasSubdivided(adjP2)) then
+                adjE2 = self % adjEdge(P, 4)
+                call collectEdgeVerts(curPts, nCur, origPatch, uvRange, adjP2, adjE2, &
+                                      C01, C11, xBuf, nX)
+                call mergeEdgeVerts(e4buf, n4, xBuf, nX, C01, C11)
+              end if
+            end if
+          end if
 
           ! T1: fan over polygon C00 → [e1 interior] → C01 → [e4 interior] → C11
           nPoly = n1
@@ -1304,6 +1413,97 @@ contains
     end do
 
   end subroutine collectEdgeVerts
+
+  !!
+  !! True if sub-patch idx's local edge `edge` lies on its ORIGINAL patch's true
+  !! outer boundary (uMin/uMax/vMin/vMax at 0 or 1), as opposed to an edge purely
+  !! internal to the original patch (shared only with another sub-patch of it).
+  !!
+  pure function edgeOnOuterBoundary(uvRange, idx, edge) result(onBoundary)
+    real(defReal), dimension(:,:), intent(in) :: uvRange
+    integer(shortInt), intent(in)             :: idx, edge
+    logical(defBool)                          :: onBoundary
+    real(defReal), parameter :: EV_TOL = 1.0E-10_defReal
+
+    onBoundary = .false.
+    select case (edge)
+      case(1);  onBoundary = uvRange(idx,1) < EV_TOL
+      case(2);  onBoundary = uvRange(idx,2) > ONE - EV_TOL
+      case(3);  onBoundary = uvRange(idx,3) < EV_TOL
+      case(4);  onBoundary = uvRange(idx,4) > ONE - EV_TOL
+    end select
+
+  end function edgeOnOuterBoundary
+
+  !!
+  !! Merge extraBuf(1:nExtra) into buf(1:nBuf) (dedup by exact-position match,
+  !! then re-sort by position along ptA->ptB). Used to reconcile two adjacent
+  !! patches' independently-generated T-junction vertices along a shared edge
+  !! when both were selectively subdivided (see call site for why this is
+  !! needed -- collectIntraPatchEdgeVerts alone only sees one side).
+  !!
+  subroutine mergeEdgeVerts(buf, nBuf, extraBuf, nExtra, ptA, ptB)
+    real(defReal), dimension(:,:), intent(inout) :: buf
+    integer(shortInt), intent(inout)             :: nBuf
+    real(defReal), dimension(:,:), intent(in)    :: extraBuf
+    integer(shortInt), intent(in)                :: nExtra
+    real(defReal), dimension(3), intent(in)      :: ptA, ptB
+
+    integer(shortInt) :: si, sj
+    logical(defBool)  :: isDup
+    real(defReal), dimension(3) :: edgeDir, tmpV
+    real(defReal), dimension(size(buf,1)) :: dotArr
+    real(defReal) :: tmpD, tParam, lenSq
+    real(defReal), parameter :: EV_TOL = 1.0E-10_defReal
+    real(defReal), parameter :: RANGE_TOL = 1.0E-6_defReal
+
+    edgeDir = ptB - ptA
+    lenSq = dot_product(edgeDir, edgeDir)
+
+    do sj = 1, nExtra
+      ! extraBuf may come from a neighbour patch's FULL boundary edge, which can
+      ! span more than THIS sub-patch's own [ptA,ptB] portion of it (e.g. when
+      ! the neighbour is subdivided into multiple pieces along the shared edge,
+      ! each call here only owns one piece). Reject anything whose projection
+      ! falls outside the ptA-ptB span. No perpendicular-distance check here:
+      ! this is a genuinely CURVED shared boundary, so interior points do not
+      ! lie on the straight chord between ptA and ptB -- every candidate from
+      ! collectEdgeVerts is already known to sit exactly on the true shared
+      ! curve (buildAdjacency verified the two patches' boundary control points
+      ! match exactly), so projection range is the only thing worth checking.
+      if (lenSq > EV_TOL) then
+        tParam = dot_product(extraBuf(sj,:) - ptA, edgeDir) / lenSq
+        if (tParam < -RANGE_TOL .or. tParam > ONE + RANGE_TOL) cycle
+      end if
+
+      isDup = .false.
+      do si = 1, nBuf
+        if (norm2(buf(si,:) - extraBuf(sj,:)) < EV_TOL) then
+          isDup = .true.
+          exit
+        end if
+      end do
+      if (.not. isDup .and. nBuf < size(buf,1)) then
+        nBuf = nBuf + 1
+        buf(nBuf,:) = extraBuf(sj,:)
+      end if
+    end do
+
+    ! Re-sort by position along ptA->ptB
+    do si = 1, nBuf
+      dotArr(si) = dot_product(buf(si,:) - ptA, edgeDir)
+    end do
+    do si = 2, nBuf
+      tmpV = buf(si,:);  tmpD = dotArr(si)
+      sj = si - 1
+      do while (sj >= 1 .and. dotArr(sj) > tmpD)
+        buf(sj+1,:) = buf(sj,:);  dotArr(sj+1) = dotArr(sj)
+        sj = sj - 1
+      end do
+      buf(sj+1,:) = tmpV;  dotArr(sj+1) = tmpD
+    end do
+
+  end subroutine mergeEdgeVerts
 
   !!
   !! Extract the 4 control points of edge e from a patch:
