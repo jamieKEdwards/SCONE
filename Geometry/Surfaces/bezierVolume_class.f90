@@ -337,8 +337,8 @@ contains
     ! adjacent to the region of interest, instead of scanning every patch in the
     ! model by loose bounding-box coincidence.
     logical(defBool), dimension(self % numPatches) :: everHullSelected
-    logical(defBool) :: fallbackEligible
-    integer(shortInt) :: fbP, fbE, fbAdjP
+    ! Candidate original-patch index for the AABB-fallback eligibility check
+    integer(shortInt) :: candidatePatch
 
     ! Triangle mesh for ray cast
     real(defReal), dimension(:,:,:), allocatable :: tris
@@ -365,11 +365,11 @@ contains
     ! neither side's independent quadtree refinement is synchronised with the
     ! other along their shared edge. collectIntraPatchEdgeVerts only ever looks
     ! within the same original patch, so it cannot see the neighbour's split
-    ! points. mergeXPatchBuf pulls the neighbour's boundary vertices in via
+    ! points. mergeEdgeVerts pulls the neighbour's boundary vertices in via
     ! collectEdgeVerts and merges them into the same buffer used for the fan,
     ! so both sides' triangulations reference an identical vertex set.
     real(defReal), dimension(MAX_TJ_BUF, 3) :: xBuf
-    integer(shortInt) :: nX, adjP2, adjE2
+    integer(shortInt) :: nX
     logical(defBool) :: onEdge, isDup
     real(defReal), dimension(3) :: pt1, pt2, tmpV3
     real(defReal) :: tmpDot, u0, u1, v0, v1, um, vm
@@ -457,24 +457,8 @@ contains
         ! scan (matches pre-fix behaviour for that narrow case).
         do i = 1, nCur
           if (.not. self % inPatchAABB(curPts(i,:,:,:), r)) cycle
-          fbP = origPatch(i)
-          if (.not. any(everHullSelected)) then
-            ! no scoping info yet: accept any AABB match
-            fallbackEligible = .true.
-          else if (everHullSelected(fbP)) then
-            ! candidate's own original patch already hull-selected
-            fallbackEligible = .true.
-          else
-            fallbackEligible = .false.
-            ! scan the 4 neighbours of fbP for a hull-selected one
-            do fbE = 1, 4
-              fbAdjP = self % adj(fbP, fbE)
-              if (fbAdjP > 0) then
-                if (everHullSelected(fbAdjP)) fallbackEligible = .true.
-              end if
-            end do
-          end if
-          if (fallbackEligible) then
+          candidatePatch = origPatch(i)
+          if (isFallbackEligible(candidatePatch, everHullSelected, self % adj)) then
             needsSubdiv(i) = .true.
             nNeed = nNeed + 1
           end if
@@ -585,44 +569,44 @@ contains
           ! internal to P (shared with another sub-patch of the same original
           ! patch) -- those are already handled by collectIntraPatchEdgeVerts above.
           if (edgeOnOuterBoundary(uvRange, i, 1)) then
-            adjP2 = self % adj(P, 1)
-            if (adjP2 > 0) then
-              if (wasSubdivided(adjP2)) then
-                adjE2 = self % adjEdge(P, 1)
-                call collectEdgeVerts(curPts, nCur, origPatch, uvRange, adjP2, adjE2, &
+            P_adj = self % adj(P, 1)
+            if (P_adj > 0) then
+              if (wasSubdivided(P_adj)) then
+                eP_idx = self % adjEdge(P, 1)
+                call collectEdgeVerts(curPts, nCur, origPatch, uvRange, P_adj, eP_idx, &
                                       C00, C01, xBuf, nX)
                 call mergeEdgeVerts(e1buf, n1, xBuf, nX, C00, C01)
               end if
             end if
           end if
           if (edgeOnOuterBoundary(uvRange, i, 2)) then
-            adjP2 = self % adj(P, 2)
-            if (adjP2 > 0) then
-              if (wasSubdivided(adjP2)) then
-                adjE2 = self % adjEdge(P, 2)
-                call collectEdgeVerts(curPts, nCur, origPatch, uvRange, adjP2, adjE2, &
+            P_adj = self % adj(P, 2)
+            if (P_adj > 0) then
+              if (wasSubdivided(P_adj)) then
+                eP_idx = self % adjEdge(P, 2)
+                call collectEdgeVerts(curPts, nCur, origPatch, uvRange, P_adj, eP_idx, &
                                       C10, C11, xBuf, nX)
                 call mergeEdgeVerts(e2buf, n2, xBuf, nX, C10, C11)
               end if
             end if
           end if
           if (edgeOnOuterBoundary(uvRange, i, 3)) then
-            adjP2 = self % adj(P, 3)
-            if (adjP2 > 0) then
-              if (wasSubdivided(adjP2)) then
-                adjE2 = self % adjEdge(P, 3)
-                call collectEdgeVerts(curPts, nCur, origPatch, uvRange, adjP2, adjE2, &
+            P_adj = self % adj(P, 3)
+            if (P_adj > 0) then
+              if (wasSubdivided(P_adj)) then
+                eP_idx = self % adjEdge(P, 3)
+                call collectEdgeVerts(curPts, nCur, origPatch, uvRange, P_adj, eP_idx, &
                                       C00, C10, xBuf, nX)
                 call mergeEdgeVerts(e3buf, n3, xBuf, nX, C00, C10)
               end if
             end if
           end if
           if (edgeOnOuterBoundary(uvRange, i, 4)) then
-            adjP2 = self % adj(P, 4)
-            if (adjP2 > 0) then
-              if (wasSubdivided(adjP2)) then
-                adjE2 = self % adjEdge(P, 4)
-                call collectEdgeVerts(curPts, nCur, origPatch, uvRange, adjP2, adjE2, &
+            P_adj = self % adj(P, 4)
+            if (P_adj > 0) then
+              if (wasSubdivided(P_adj)) then
+                eP_idx = self % adjEdge(P, 4)
+                call collectEdgeVerts(curPts, nCur, origPatch, uvRange, P_adj, eP_idx, &
                                       C01, C11, xBuf, nX)
                 call mergeEdgeVerts(e4buf, n4, xBuf, nX, C01, C11)
               end if
@@ -1415,9 +1399,23 @@ contains
   end subroutine collectEdgeVerts
 
   !!
-  !! True if sub-patch idx's local edge `edge` lies on its ORIGINAL patch's true
-  !! outer boundary (uMin/uMax/vMin/vMax at 0 or 1), as opposed to an edge purely
-  !! internal to the original patch (shared only with another sub-patch of it).
+  !! Checks whether a sub-patch's edge lies on its original patch's outer boundary
+  !!
+  !! Distinguishes a sub-patch edge that sits on its ORIGINAL patch's true outer
+  !! boundary (uMin/uMax/vMin/vMax at 0 or 1) from one purely internal to the
+  !! original patch (shared only with another sub-patch of the same original).
+  !!
+  !! Args:
+  !!   uvRange [in] -> UV parameter range table [uMin, uMax, vMin, vMax] for
+  !!     every current sub-patch
+  !!   idx [in] -> index of the sub-patch to check, into uvRange
+  !!   edge [in] -> local edge number to check (1-4; see module header for
+  !!     the edge-numbering convention)
+  !!
+  !! Result:
+  !!   .true. if edge `edge` of sub-patch `idx` lies on the [0,1] boundary of
+  !!   the original patch's parameter space; .false. if it is an internal
+  !!   split introduced by subdivision.
   !!
   pure function edgeOnOuterBoundary(uvRange, idx, edge) result(onBoundary)
     real(defReal), dimension(:,:), intent(in) :: uvRange
@@ -1436,11 +1434,73 @@ contains
   end function edgeOnOuterBoundary
 
   !!
-  !! Merge extraBuf(1:nExtra) into buf(1:nBuf) (dedup by exact-position match,
-  !! then re-sort by position along ptA->ptB). Used to reconcile two adjacent
-  !! patches' independently-generated T-junction vertices along a shared edge
-  !! when both were selectively subdivided (see call site for why this is
-  !! needed -- collectIntraPatchEdgeVerts alone only sees one side).
+  !! Checks whether an original patch is eligible for the AABB-only subdivision fallback
+  !!
+  !! Scopes the Step 3 AABB-only fallback (triggered when the strict hull test
+  !! finds no patch, typically floating-point precision on an already-tight,
+  !! deeply-subdivided hull) so it does not pull in unrelated patches purely by
+  !! loose bounding-box coincidence. See the Step 3 call site for the full
+  !! rationale and the Gumbo case that motivated it.
+  !!
+  !! Args:
+  !!   candidatePatch [in] -> index of the original patch being considered for
+  !!     the fallback
+  !!   everHullSelected [in] -> per-original-patch flag, true if that patch has
+  !!     passed the strict hull test at least once this halfspace() call
+  !!   adj [in] -> patch adjacency map, adj(i,e) = index of the patch sharing
+  !!     edge e of patch i, or -1 if none
+  !!
+  !! Result:
+  !!   .true. if no original patch has EVER passed the strict hull test this
+  !!   call (no scoping information yet), if candidatePatch itself has, or if
+  !!   one of candidatePatch's 4 neighbours has; .false. otherwise.
+  !!
+  pure function isFallbackEligible(candidatePatch, everHullSelected, adj) result(eligible)
+    integer(shortInt), intent(in)                 :: candidatePatch
+    logical(defBool), dimension(:), intent(in)    :: everHullSelected
+    integer(shortInt), dimension(:,:), intent(in) :: adj
+    logical(defBool)                              :: eligible
+    integer(shortInt) :: e, adjPatch
+
+    if (.not. any(everHullSelected)) then
+      eligible = .true.
+    else if (everHullSelected(candidatePatch)) then
+      eligible = .true.
+    else
+      eligible = .false.
+      do e = 1, 4
+        adjPatch = adj(candidatePatch, e)
+        if (adjPatch > 0) then
+          if (everHullSelected(adjPatch)) eligible = .true.
+        end if
+      end do
+    end if
+
+  end function isFallbackEligible
+
+  !!
+  !! Merges a neighbouring sub-patch's boundary vertices into this sub-patch's buffer
+  !!
+  !! Reconciles two adjacent patches' independently-generated T-junction vertices
+  !! along a shared edge when both were selectively subdivided (see call site for
+  !! why this is needed -- collectIntraPatchEdgeVerts alone only sees one side).
+  !! Vertices from extraBuf are accepted only if their projection onto ptA->ptB
+  !! falls within [0,1] (extraBuf may cover more of the shared edge than this
+  !! sub-patch's own [ptA,ptB] portion of it); accepted vertices are merged into
+  !! buf with exact-position deduplication, then the whole of buf is re-sorted
+  !! by position along ptA->ptB.
+  !!
+  !! Args:
+  !!   buf [inout] -> this sub-patch's edge-vertex buffer; on entry holds
+  !!     buf(1:nBuf), on exit holds the merged, re-sorted result
+  !!   nBuf [inout] -> number of valid entries in buf
+  !!   extraBuf [in] -> the neighbouring sub-patch's edge-vertex buffer to merge in
+  !!   nExtra [in] -> number of valid entries in extraBuf
+  !!   ptA [in] -> start point of the shared edge, in the direction buf is sorted by
+  !!   ptB [in] -> end point of the shared edge
+  !!
+  !! Result:
+  !!   None (buf and nBuf are updated in place).
   !!
   subroutine mergeEdgeVerts(buf, nBuf, extraBuf, nExtra, ptA, ptB)
     real(defReal), dimension(:,:), intent(inout) :: buf
