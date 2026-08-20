@@ -19,6 +19,7 @@ module surfaceFactory_func
   use truncCone_class,      only : truncCone
   use wedge_class,          only : wedge
   use neuralSurface_class,  only : neuralSurface
+  use deepLSSurface_class,  only : deepLSSurface
   use bezierShape_class,    only : bezierShape
   use bezierTwist_class,    only : bezierTwist
   use bezierVolume_class,   only : bezierVolume
@@ -51,6 +52,7 @@ module surfaceFactory_func
                                                                       'yWedge         ',&
                                                                       'zWedge         ',&
                                                                       'neuralSurface  ',&
+                                                                      'deepLSSurface  ',&
                                                                       'bezierShape    ',&
                                                                       'bezierTwist    ',&
                                                                       'bezierVolume   ']
@@ -117,7 +119,10 @@ contains
 
       case ('neuralSurface')
         allocate (neuralSurface :: new)
-        
+
+      case ('deepLSSurface')
+        allocate (deepLSSurface :: new)
+
       case ('bezierShape')
         allocate (bezierShape :: new)
 

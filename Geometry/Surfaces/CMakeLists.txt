@@ -14,6 +14,8 @@ add_sources(./surface_inter.f90
             ./mlpInference_mod.f90
             ./mlpWeightIO_mod.f90
             ./neuralSurface_class.f90
+            ./deepLSWeightIO_mod.f90
+            ./deepLSSurface_class.f90
             ./bezierShape_class.f90
             ./bezierTwist_class.f90
             ./bezierVolume_class.f90

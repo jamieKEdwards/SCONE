@@ -169,6 +169,9 @@ target_link_libraries(mlpRoundtrip_sandbox.out scone)
 add_executable(neuralSurface_sandbox.out ./Apps/neuralSurface_sandbox.f90)
 target_link_libraries(neuralSurface_sandbox.out scone)
 
+add_executable(deepLSSurface_sandbox.out ./Apps/deepLSSurface_sandbox.f90)
+target_link_libraries(deepLSSurface_sandbox.out scone)
+
 add_executable(sdfSampler.out ./Apps/sdfSampler.f90)
 target_link_libraries(sdfSampler.out scone)
 

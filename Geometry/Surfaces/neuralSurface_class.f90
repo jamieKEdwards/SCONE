@@ -10,6 +10,7 @@ module neuralSurface_class
   use sphere_class,         only : sphere        !! !!TO BE REMOVED!!
   use bezierShape_class,    only : bezierShape   !! !!TO BE REMOVED!!
   use bezierTwist_class,    only : bezierTwist   !! !!TO BE REMOVED!!
+  use bezierVolume_class,   only : bezierVolume  !! !!TO BE REMOVED!! (diagnostic refSurfaces union only)
 
   implicit none
   private
@@ -56,9 +57,15 @@ module neuralSurface_class
     private
     type(trainedMLP)           :: mlp
     real(defReal)              :: geomScale   = ONE
-    !! !!TO BE REMOVED!! Misclassification diagnostic members
+    !! !!TO BE REMOVED!! Misclassification diagnostic members. refSurfBody/
+    !! Handle/Spout: union-of-3 reference for complex multi-shape geometry
+    !! (the teapot), same convention as deepLSSurface_class.f90's
+    !! identical addition -- see that module for the full derivation.
     real(defReal)              :: diagRefR2   = ZERO
-    class(surface), pointer    :: refSurf     => null()
+    class(surface), pointer    :: refSurf       => null()
+    class(surface), pointer    :: refSurfBody   => null()
+    class(surface), pointer    :: refSurfHandle => null()
+    class(surface), pointer    :: refSurfSpout  => null()
     logical(defBool)           :: refFlip     = .false.
     logical(defBool)           :: diagEnabled = .true.
   contains
@@ -113,6 +120,7 @@ contains
     integer(shortInt)             :: diagEnabledInt
     type(dictionary)              :: refSurfDict
     character(nameLen)            :: refType
+    type(dictionary)              :: refSurfacesDict
     character(100), parameter :: Here = 'init (neuralSurface_class.f90)'
 
     call dict % get(id, 'id')
@@ -182,6 +190,51 @@ contains
           call fatalError(Here, 'Unsupported refSurface type: '//trim(refType))
       end select
       call self % refSurf % init(refSurfDict)
+      if (dict % isPresent('refFlip')) then
+        call dict % get(refFlipInt, 'refFlip')
+        self % refFlip = (refFlipInt /= 0)
+      else
+        self % refFlip = .false.
+      end if
+      if (self % diagEnabled .and. (.not. diagFileOpen)) then
+        open(unit=DIAG_UNIT, file=trim(diagFile), status='replace', action='write')
+        write(DIAG_UNIT, '(A)') '# x  y  z  neural_hs  ref_hs  sdf'
+        diagFileOpen = .true.
+      end if
+    end if
+
+    !! !!TO BE REMOVED!! Optional diagnostic: UNION-of-3 reference surface for
+    !! complex multi-shape geometry (the teapot) -- same convention as
+    !! deepLSSurface_class.f90's identical addition. Requires all three
+    !! of body/handle/spout. Takes precedence over refSurface if both present.
+    if (dict % isPresent('refSurfaces')) then
+      if (dict % isPresent('diagEnabled')) then
+        call dict % get(diagEnabledInt, 'diagEnabled')
+        self % diagEnabled = (diagEnabledInt /= 0)
+      else
+        self % diagEnabled = .true.
+      end if
+      if (associated(self % refSurfBody))   call self % refSurfBody   % kill()
+      if (associated(self % refSurfHandle)) call self % refSurfHandle % kill()
+      if (associated(self % refSurfSpout))  call self % refSurfSpout  % kill()
+
+      call dict % get(refSurfacesDict, 'refSurfaces')
+      if (.not. refSurfacesDict % isPresent('body'))   call fatalError(Here, "refSurfaces missing 'body'")
+      if (.not. refSurfacesDict % isPresent('handle')) call fatalError(Here, "refSurfaces missing 'handle'")
+      if (.not. refSurfacesDict % isPresent('spout'))  call fatalError(Here, "refSurfaces missing 'spout'")
+
+      call refSurfacesDict % get(refSurfDict, 'body')
+      allocate(bezierVolume :: self % refSurfBody)
+      call self % refSurfBody % init(refSurfDict)
+
+      call refSurfacesDict % get(refSurfDict, 'handle')
+      allocate(bezierVolume :: self % refSurfHandle)
+      call self % refSurfHandle % init(refSurfDict)
+
+      call refSurfacesDict % get(refSurfDict, 'spout')
+      allocate(bezierVolume :: self % refSurfSpout)
+      call self % refSurfSpout % init(refSurfDict)
+
       if (dict % isPresent('refFlip')) then
         call dict % get(refFlipInt, 'refFlip')
         self % refFlip = (refFlipInt /= 0)
@@ -306,8 +359,28 @@ contains
       end if
     end if
 
+    !! !!TO BE REMOVED!! Misclassification diagnostic: union-of-3 reference
+    !! (teapot) takes precedence over the single-surface reference if both
+    !! are somehow populated -- same convention as
+    !! deepLSSurface_class.f90's identical addition.
+    if (self % diagEnabled .and. associated(self % refSurfBody)) then
+      ref_hs = self % refSurfBody   % halfspace(r, u) .and. &
+               self % refSurfHandle % halfspace(r, u) .and. &
+               self % refSurfSpout  % halfspace(r, u)
+      if (self % refFlip) ref_hs = .not. ref_hs
+      !$omp atomic
+      neuralSurf_nCalls = neuralSurf_nCalls + 1_longInt
+      if (hs .neqv. ref_hs) then
+        !$omp atomic
+        neuralSurf_nMisclass = neuralSurf_nMisclass + 1_longInt
+        if (diagFileOpen) then
+          !$omp critical(neuralDiag)
+          write(DIAG_UNIT, '(3ES16.8, 2L3, ES16.8)') r(1), r(2), r(3), hs, ref_hs, c
+          !$omp end critical(neuralDiag)
+        end if
+      end if
     !! !!TO BE REMOVED!! Misclassification diagnostic: compare with reference surface
-    if (self % diagEnabled .and. associated(self % refSurf)) then
+    else if (self % diagEnabled .and. associated(self % refSurf)) then
       ref_hs = self % refSurf % halfspace(r, u)
       if (self % refFlip) ref_hs = .not. ref_hs
       !$omp atomic
@@ -367,10 +440,22 @@ contains
     type(neuralSurface), intent(inout) :: self
 
     if (self % mlp % isInit) call self % mlp % kill()
-    !! !!TO BE REMOVED!! Release diagnostic reference surface
+    !! !!TO BE REMOVED!! Release diagnostic reference surface(s)
     if (associated(self % refSurf)) then
       call self % refSurf % kill()
       deallocate(self % refSurf)
+    end if
+    if (associated(self % refSurfBody)) then
+      call self % refSurfBody % kill()
+      deallocate(self % refSurfBody)
+    end if
+    if (associated(self % refSurfHandle)) then
+      call self % refSurfHandle % kill()
+      deallocate(self % refSurfHandle)
+    end if
+    if (associated(self % refSurfSpout)) then
+      call self % refSurfSpout % kill()
+      deallocate(self % refSurfSpout)
     end if
 
   end subroutine finaliseNeuralSurface

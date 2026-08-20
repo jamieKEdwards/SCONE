@@ -73,7 +73,8 @@ module eigenPhysicsPackage_class
 
   ! Neural surface diagnostics !!TO BE REMOVED!!
   use neuralSurface_class,            only : printNeuralDiagnostics
-  
+  use deepLSSurface_class,            only : printDeepLSDiagnostics
+
   ! Bezier diagnostics         !!TO BE REMOVED!!
   use bezierVolume_class,             only : printBezierDiagnostics
   use bezierShape_class,              only : printBezierShapeDiagnostics
@@ -158,6 +159,7 @@ contains
     call printBezierShapeDiagnostics()
     call printBezierDiagnostics()
     call printNeuralDiagnostics()
+    call printDeepLSDiagnostics()
 
     ! Collect results from other processes
     call self % inactiveTally % collectDistributed()

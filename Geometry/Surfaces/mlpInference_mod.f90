@@ -66,9 +66,10 @@ module mlpInference_mod
     logical(defBool) :: isInit = .false.
 
   contains
-    procedure :: init     => initMLP
-    procedure :: evaluate => evaluateMLP
-    procedure :: kill     => killMLP
+    procedure :: init       => initMLP
+    procedure :: evaluate   => evaluateMLP
+    procedure :: evaluateRaw => evaluateRawMLP
+    procedure :: kill       => killMLP
   end type trainedMLP
 
 contains
@@ -213,6 +214,72 @@ contains
     sdf = tanh(h(1)) * self % sdfScale
 
   end function evaluateMLP
+
+  !!
+  !! Evaluate the MLP forward pass on a pre-built input vector, with NO bbox
+  !! normalisation — the caller assembles `input` itself.
+  !!
+  !! For DeepLS shared-decoder inference: one trainedMLP instance holds the
+  !! shared decoder weights (inputDim = latentDim + 3), and the caller
+  !! concatenates [normalised local xyz, per-voxel latent code] before
+  !! calling this — normalisation uses the VOXEL's own local bbox (stored on
+  !! the surface, not on this shared trainedMLP instance, since bboxMin/
+  !! bboxMax here are meaningless for the latent dimensions). See
+  !! deepLSSurface_class.f90.
+  !!
+  !! Pure — safe to call from within SCONE's pure surface evaluate() procedure.
+  !! Same sign convention as evaluateMLP: negative = inside, positive = outside.
+  !!
+  !! Args:
+  !!   input [in] -> Pre-normalised/pre-concatenated input vector, size >= inputDim
+  !!
+  !! Result:
+  !!   Approximate signed distance value in world units.
+  !!
+  pure function evaluateRawMLP(self, input) result(sdf)
+    class(trainedMLP), intent(in)         :: self
+    real(defReal), dimension(:), intent(in) :: input
+    real(defReal)                         :: sdf
+    real(defReal), dimension(MLP_MAX_DIM) :: h, h_next
+    integer(shortInt)                     :: l, i, inDim, outDim
+
+    h(1:self % inputDim) = input(1:self % inputDim)
+    inDim = self % inputDim
+
+    do l = 1, self % numLayers
+
+      if (l < self % numLayers) then
+        outDim = self % hiddenDim
+      else
+        outDim = 1
+      end if
+
+      h_next(1:outDim) = matmul(self % weights(1:outDim, 1:inDim, l), h(1:inDim)) &
+                       + self % biases(1:outDim, l)
+
+      if (l < self % numLayers) then
+        select case (self % activationType)
+          case (ACTIVATION_LEAKYRELU)
+            do i = 1, outDim
+              if (h_next(i) < ZERO) h_next(i) = self % leakyAlpha * h_next(i)
+            end do
+          case (ACTIVATION_RELU)
+            do i = 1, outDim
+              if (h_next(i) < ZERO) h_next(i) = ZERO
+            end do
+          case (ACTIVATION_TANH)
+            h_next(1:outDim) = tanh(h_next(1:outDim))
+        end select
+      end if
+
+      h(1:outDim) = h_next(1:outDim)
+      inDim = outDim
+
+    end do
+
+    sdf = tanh(h(1)) * self % sdfScale
+
+  end function evaluateRawMLP
 
   !!
   !! Return to uninitialised state and deallocate weight arrays

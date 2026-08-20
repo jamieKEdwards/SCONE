@@ -60,8 +60,10 @@ class NeuralSDF(nn.Module):
             raise ValueError("num_layers must be >= 2 (at least one hidden + output layer)")
         if activation not in _ACTIVATION_NAMES:
             raise ValueError(f"activation must be one of {list(_ACTIVATION_NAMES)}")
-        if in_dim not in (2, 3):
-            raise ValueError("in_dim must be 2 or 3")
+        if in_dim < 2:
+            raise ValueError("in_dim must be >= 2")
+        # in_dim > 3 is used for DeepLS shared-decoder training: input is
+        # [latent_code (in_dim-3), xyz (3)] concatenated — see train_deepls_shared.py
 
         self.in_dim        = in_dim
         self.hidden_dim    = hidden_dim
