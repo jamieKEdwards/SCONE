@@ -21,6 +21,7 @@ module tallyClerkFactory_func
   use kAlphaAnalogClerk_class,         only : kAlphaAnalogClerk
   use removalTimeClerk_class,          only : removalTimeClerk
   use mgXsClerk_class,                 only : mgXsClerk
+  use misclassClerk_class,             only : misclassClerk
 
   implicit none
   private
@@ -43,7 +44,8 @@ module tallyClerkFactory_func
                                                                         'dancoffBellClerk         ',&
                                                                         'kAlphaAnalogClerk        ',&
                                                                         'removalTimeClerk         ',&
-                                                                        'mgXsClerk                ']
+                                                                        'mgXsClerk                ',&
+                                                                        'misclassClerk            ']
 
 contains
 
@@ -104,6 +106,9 @@ contains
 
      case('mgXsClerk')
        allocate(mgXsClerk :: new)
+
+     case('misclassClerk')
+       allocate(misclassClerk :: new)
 
       case default
         print *, AVALIBLE_tallyClerks

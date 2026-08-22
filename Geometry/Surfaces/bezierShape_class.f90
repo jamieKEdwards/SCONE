@@ -8,13 +8,6 @@ module bezierShape_class
   implicit none
   private
 
-  integer(shortInt), parameter, private :: SHAPE_DIAG_UNIT = 96
-  integer(longInt),  save, public       :: bezierShape_nCalls    = 0_longInt
-  integer(longInt),  save, public       :: bezierShape_nMisclass = 0_longInt
-  logical(defBool),  save, private      :: shapeDiagFileOpen = .false.
-
-  public :: printBezierShapeDiagnostics
-
   !!
   !!
   !! Bezier shape defined by intersection watertight bezier curves
@@ -49,6 +42,9 @@ module bezierShape_class
   !!         1.0 0.80474 0.80474 1.0
   !!         1.0 0.80474 0.80474 1.0 ); }
   !!
+  !! See misclassClerk_class (Tallies/TallyClerks) for a halfspace
+  !! misclassification diagnostic against a reference region.
+  !!
   !! Private members:
   !!   norm -> Normal vector (normalised) [c1, c2, c3]
   !!   offset -> Offset, c4 (also normalised)
@@ -64,8 +60,6 @@ module bezierShape_class
     real(defReal), dimension(:, :),   allocatable   :: weights
     integer(shortInt)                               :: numCurves = 0
     integer(shortInt)                               :: order = 0
-    real(defReal)                                   :: diagRefR2   = ZERO
-    logical(defBool)                                :: diagEnabled = .false.
   contains
     ! Superclass procedures
     procedure :: myType
@@ -155,18 +149,6 @@ contains
       end do
     else
       self % weights = ONE
-    end if
-
-    ! Optional analytic circle diagnostic: compare halfspace against r^2 = diagRadius^2
-    if (dict % isPresent('diagRadius')) then
-      call dict % get(self % diagRefR2, 'diagRadius')
-      self % diagRefR2   = self % diagRefR2 * self % diagRefR2
-      self % diagEnabled = .true.
-      if (.not. shapeDiagFileOpen) then
-        open(unit=SHAPE_DIAG_UNIT, file='bezierShape_misclass.dat', status='replace', action='write')
-        write(SHAPE_DIAG_UNIT, '(A)') '# x  y  z  bezierShape_inside  circle_inside'
-        shapeDiagFileOpen = .true.
-      end if
     end if
 
   end subroutine init
@@ -377,22 +359,6 @@ contains
         hs = .true.
       elseif (.not. self % inOrOut(outer, m, r_temp)) then
         hs = .false.
-      end if
-    end if
-
-    ! Analytic circle diagnostic: compare bezierShape result against x^2+y^2 < R^2
-    if (self % diagEnabled) then
-      !$omp atomic
-      bezierShape_nCalls = bezierShape_nCalls + 1_longInt
-      if (hs .neqv. ((r(1)*r(1) + r(2)*r(2)) < self % diagRefR2)) then
-        !$omp atomic
-        bezierShape_nMisclass = bezierShape_nMisclass + 1_longInt
-        if (shapeDiagFileOpen) then
-          !$omp critical(bezierShapeDiag)
-          write(SHAPE_DIAG_UNIT, '(3ES16.8, 2L3)') r(1), r(2), r(3), hs, &
-                                                    ((r(1)*r(1)+r(2)*r(2)) < self % diagRefR2)
-          !$omp end critical(bezierShapeDiag)
-        end if
       end if
     end if
 
@@ -836,33 +802,5 @@ contains
     self % order     = 0
 
   end subroutine kill
-
-  !!
-  !! Print bezierShape misclassification diagnostic summary
-  !!
-  subroutine printBezierShapeDiagnostics()
-    real(defReal) :: pct
-
-    if (bezierShape_nCalls == 0_longInt) return
-
-    pct = 100.0_defReal * real(bezierShape_nMisclass, defReal) / real(bezierShape_nCalls, defReal)
-
-    print '(A)', ''
-    print '(A)', '--- bezierShape Halfspace Diagnostic ---'
-    print '(A,I0)', '  Total halfspace calls : ', bezierShape_nCalls
-    print '(A,I0)', '  Misclassified calls   : ', bezierShape_nMisclass
-    print '(A,F8.4,A)', '  Misclassification rate: ', pct, ' %'
-    if (shapeDiagFileOpen) then
-      print '(A)', '  Details written to: bezierShape_misclass.dat'
-      write(SHAPE_DIAG_UNIT, '(A)')       '# ---- Summary ----'
-      write(SHAPE_DIAG_UNIT, '(A,I0)')    '# Total calls:   ', bezierShape_nCalls
-      write(SHAPE_DIAG_UNIT, '(A,I0)')    '# Misclassified: ', bezierShape_nMisclass
-      write(SHAPE_DIAG_UNIT, '(A,F8.4,A)') '# Rate:          ', pct, ' %'
-      close(SHAPE_DIAG_UNIT)
-      shapeDiagFileOpen = .false.
-    end if
-    print '(A)', '----------------------------------------'
-
-  end subroutine printBezierShapeDiagnostics
 
 end module bezierShape_class

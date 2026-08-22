@@ -17,14 +17,6 @@ module bezierVolume_class
   ! GJK tolerance
   real(defReal), parameter :: GJK_EPS = 1.0E-12_defReal
 
-  ! Diagnostic: analytical sphere comparison
-  integer(shortInt), parameter :: DIAG_UNIT     = 98
-  integer(shortInt), save      :: diagTotal     = 0
-  integer(shortInt), save      :: diagMisclass  = 0
-  logical(defBool), save       :: diagFileOpen  = .false.
-
-  public :: printBezierDiagnostics
-
   !!
   !! 3D Bezier volume surface defined by a watertight set of bicubic Bezier patches.
   !!
@@ -64,6 +56,9 @@ module bezierVolume_class
   !! Sample input:
   !!   vol { type bezierVolume; id 1; numPatches 6; ctrlPts (x y z ...); }
   !!
+  !! See misclassClerk_class (Tallies/TallyClerks) for a halfspace
+  !! misclassification diagnostic against a reference region.
+  !!
   type, public, extends(surface) :: bezierVolume
     private
     real(defReal), dimension(:,:,:,:), allocatable :: ctrlPts      ! (numPatches, 4, 4, 3)
@@ -76,8 +71,6 @@ module bezierVolume_class
     integer(shortInt), dimension(:,:), allocatable :: adj
     integer(shortInt), dimension(:,:), allocatable :: adjEdge
     real(defReal), dimension(:,:,:), allocatable   :: weights      ! (numPatches, 4, 4)
-    logical(defBool) :: doDiag = .false.
-    real(defReal)    :: diagR2 = ZERO                              ! diagRadius^2; 0 = disabled
   contains
     procedure :: myType
     procedure :: init
@@ -182,19 +175,6 @@ contains
     end do
 
     call self % buildAdjacency()
-
-    self % doDiag = .false.
-    self % diagR2 = ZERO
-    if (dict % isPresent('diagRadius')) then
-      call dict % get(self % diagR2, 'diagRadius')
-      self % diagR2 = self % diagR2 ** 2
-      self % doDiag = .true.
-      if (.not. diagFileOpen) then
-        open(unit=DIAG_UNIT, file='bezier_misclass.dat', status='replace', action='write')
-        write(DIAG_UNIT, '(A)') '# x  y  z  r2  analytical_inside  bezier_inside'
-        diagFileOpen = .true.
-      end if
-    end if
 
   end subroutine init
 
@@ -380,10 +360,6 @@ contains
     integer(shortInt), parameter :: MAX_POLY = 530   ! 2 * MAX_TJ_BUF + endpoints
     real(defReal), dimension(MAX_POLY, 3) :: poly
     integer(shortInt) :: nPoly
-
-    ! Diagnostic (only used when self%doDiag)
-    real(defReal)    :: r2
-    logical(defBool) :: analyticalIn, bezierIn
 
     ! --- Step 1: AABB rejection ---
     if (r(1) < self % aabb(1) - SURF_TOL .or. r(1) > self % aabb(4) + SURF_TOL .or. &
@@ -732,22 +708,6 @@ contains
     deallocate(curPts, curWeights, origPatch, uvRange, tris)
 
     999 continue
-
-    if (self % doDiag) then
-      r2           = r(1)**2 + r(2)**2 + r(3)**2
-      analyticalIn = (r2 < self % diagR2)
-      bezierIn     = .not. hs
-      !$omp atomic
-      diagTotal = diagTotal + 1
-      if (analyticalIn .neqv. bezierIn) then
-        !$omp critical(bezierDiag)
-        diagMisclass = diagMisclass + 1
-        if (diagFileOpen) then
-          write(DIAG_UNIT, '(3ES16.8, ES16.8, L3, L3)') r(1), r(2), r(3), r2, analyticalIn, bezierIn
-        end if
-        !$omp end critical(bezierDiag)
-      end if
-    end if
 
   end function halfspace
 
@@ -1610,7 +1570,7 @@ contains
   end function patchEdgeMid
 
   ! ---------------------------------------------------------------------------
-  ! Kill and diagnostics
+  ! Kill
   ! ---------------------------------------------------------------------------
 
   elemental subroutine kill(self)
@@ -1629,31 +1589,5 @@ contains
     self % aabb       = ZERO
 
   end subroutine kill
-
-  subroutine printBezierDiagnostics()
-    real(defReal) :: pct
-
-    if (diagTotal == 0) return
-
-    pct = 100.0_defReal * real(diagMisclass, defReal) / real(diagTotal, defReal)
-
-    write(*, '(A)')            ''
-    write(*, '(A)')            '====== bezierVolume Diagnostic Report ======'
-    write(*, '(A, I12)')      'Total halfspace calls:  ', diagTotal
-    write(*, '(A, I12)')      'Misclassified points:   ', diagMisclass
-    write(*, '(A, F10.4, A)') 'Misclassification rate: ', pct, '%'
-    write(*, '(A)')            'Details written to: bezier_misclass.dat'
-    write(*, '(A)')            '============================================'
-
-    if (diagFileOpen) then
-      write(DIAG_UNIT, '(A)')            '# ---- Summary ----'
-      write(DIAG_UNIT, '(A, I12)')      '# Total calls:    ', diagTotal
-      write(DIAG_UNIT, '(A, I12)')      '# Misclassified:  ', diagMisclass
-      write(DIAG_UNIT, '(A, F10.4, A)') '# Rate:           ', pct, '%'
-      close(DIAG_UNIT)
-      diagFileOpen = .false.
-    end if
-
-  end subroutine printBezierDiagnostics
 
 end module bezierVolume_class
