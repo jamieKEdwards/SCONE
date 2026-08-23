@@ -189,6 +189,7 @@ contains
     real(defReal), dimension(4,3) :: edgeI, edgeJ
     logical(defBool) :: fwd, rev
     real(defReal), parameter :: MATCH_TOL = 1.0E-10_defReal
+    logical(defBool) :: isDegenerate
 
     allocate(self % adj(self % numPatches, 4))
     allocate(self % adjEdge(self % numPatches, 4))
@@ -198,6 +199,25 @@ contains
     do i = 1, self % numPatches
       do ei = 1, 4
         edgeI = patchEdge(self % ctrlPts(i,:,:,:), ei)
+
+        ! A degenerate edge (all 4 control points collapsed to one point, e.g. a
+        ! polar/fan apex) can be "shared" with more than 2 other patches at once
+        ! (every patch touching that point has a degenerate edge equal to it).
+        ! The matching loop below only ever records ONE neighbour per edge, so
+        ! for such a point it silently keeps overwriting adj()/adjEdge() as later
+        ! patches are found, leaving an inconsistent, asymmetric adjacency graph
+        ! (confirmed via SCONE_DBG_ADJ on the teapot's lid-knob and bottom-centre
+        ! poles -- see bezierVolume_status.md Section 11/13). A degenerate edge
+        ! has no interior length and therefore no T-junction vertices to
+        ! reconcile in the first place, so the safe fix is to skip matching it
+        ! entirely: adj/adjEdge stay at -1, which Step 4 already treats as "no
+        ! adjacent patch" via its existing P_adj <= 0 fallback.
+        isDegenerate = .true.
+        do k = 2, 4
+          if (any(abs(edgeI(k,:) - edgeI(1,:)) > MATCH_TOL)) isDegenerate = .false.
+        end do
+        if (isDegenerate) cycle
+
         do j = i + 1, self % numPatches
           do ej = 1, 4
             edgeJ = patchEdge(self % ctrlPts(j,:,:,:), ej)
@@ -597,10 +617,12 @@ contains
             poly(nPoly, :) = e4buf(si, :)
           end do
           do si = 2, nPoly - 1
-            nTri = nTri + 1
-            tris(nTri, 1, :) = poly(1, :)
-            tris(nTri, 2, :) = poly(si, :)
-            tris(nTri, 3, :) = poly(si+1, :)
+            if (.not. triDegenerate(poly(1,:), poly(si,:), poly(si+1,:))) then
+              nTri = nTri + 1
+              tris(nTri, 1, :) = poly(1, :)
+              tris(nTri, 2, :) = poly(si, :)
+              tris(nTri, 3, :) = poly(si+1, :)
+            end if
           end do
 
           ! T2: fan over polygon C00 → [e3 interior] → C10 → [e2 interior] → C11
@@ -611,10 +633,12 @@ contains
             poly(nPoly, :) = e2buf(si, :)
           end do
           do si = 2, nPoly - 1
-            nTri = nTri + 1
-            tris(nTri, 1, :) = poly(1, :)
-            tris(nTri, 2, :) = poly(si, :)
-            tris(nTri, 3, :) = poly(si+1, :)
+            if (.not. triDegenerate(poly(1,:), poly(si,:), poly(si+1,:))) then
+              nTri = nTri + 1
+              tris(nTri, 1, :) = poly(1, :)
+              tris(nTri, 2, :) = poly(si, :)
+              tris(nTri, 3, :) = poly(si+1, :)
+            end if
           end do
         end do
 
@@ -679,10 +703,12 @@ contains
           poly(nPoly, :) = e4buf(si, :)
         end do
         do si = 2, nPoly - 1
-          nTri = nTri + 1
-          tris(nTri, 1, :) = poly(1, :)
-          tris(nTri, 2, :) = poly(si, :)
-          tris(nTri, 3, :) = poly(si+1, :)
+          if (.not. triDegenerate(poly(1,:), poly(si,:), poly(si+1,:))) then
+            nTri = nTri + 1
+            tris(nTri, 1, :) = poly(1, :)
+            tris(nTri, 2, :) = poly(si, :)
+            tris(nTri, 3, :) = poly(si+1, :)
+          end if
         end do
 
         ! --- T2: polygon [e3_sorted || e2_sorted[2:]], fan from C00 ---
@@ -693,10 +719,12 @@ contains
           poly(nPoly, :) = e2buf(si, :)
         end do
         do si = 2, nPoly - 1
-          nTri = nTri + 1
-          tris(nTri, 1, :) = poly(1, :)
-          tris(nTri, 2, :) = poly(si, :)
-          tris(nTri, 3, :) = poly(si+1, :)
+          if (.not. triDegenerate(poly(1,:), poly(si,:), poly(si+1,:))) then
+            nTri = nTri + 1
+            tris(nTri, 1, :) = poly(1, :)
+            tris(nTri, 2, :) = poly(si, :)
+            tris(nTri, 3, :) = poly(si+1, :)
+          end if
         end do
 
       end if
@@ -728,6 +756,26 @@ contains
     real(defReal), dimension(3)             :: r
     r = cross3(cross3(a, b), c)
   end function tripleCross
+
+  !!
+  !! True if triangle (v0,v1,v2) has two coincident vertices (zero area).
+  !!
+  !! 2026-08-22 fix (bezierVolume_status.md Section 13/14): a fan-cap patch
+  !! whose whole edge1 row is collapsed to a single point (e.g. the spout's
+  !! degenerate tip/base caps) has C00 == C01 exactly. The unsubdivided-patch
+  !! T1 fan (poly = e1buf || e4buf[2:], fan from C00) then emits a triangle
+  !! (C00, C00, C11) with two identical vertices -- zero area, contributes
+  !! nothing to any real ray cast, but its two "edges" that aren't truly zero
+  !! length duplicate T2's genuine edges, showing up as spurious duplicate
+  !! edges in a watertightness scan. Filtering these out at emission is a
+  !! strict improvement: a degenerate triangle can never be a needed hit.
+  !!
+  pure function triDegenerate(v0, v1, v2) result(deg)
+    real(defReal), dimension(3), intent(in) :: v0, v1, v2
+    logical(defBool) :: deg
+    real(defReal), parameter :: DEG_TOL = 1.0E-9_defReal
+    deg = (norm2(v0-v1) < DEG_TOL) .or. (norm2(v1-v2) < DEG_TOL) .or. (norm2(v0-v2) < DEG_TOL)
+  end function triDegenerate
 
   !!
   !! GJK test: is point r inside the convex hull of pts(1:nPts,:)?
@@ -1188,15 +1236,18 @@ contains
     integer(shortInt), intent(out)                :: nBuf
 
     integer(shortInt) :: i, si, P
-    real(defReal), dimension(3)       :: pt1, pt2, edgeDir, tmpV
-    real(defReal), dimension(size(buf,1)) :: dotArr
-    real(defReal) :: tmpD, boundaryVal, pMin, pMax
+    real(defReal), dimension(3)       :: pt1, pt2, tmpV
+    real(defReal), dimension(size(buf,1)) :: paramArr
+    real(defReal) :: tmpD, boundaryVal, pMin, pMax, p1, p2
     logical(defBool) :: onEdge, isDup
     real(defReal), parameter :: EV_TOL = 1.0E-10_defReal
 
-    P       = origPatch(Si_idx)
-    nBuf    = 0
-    edgeDir = ptB - ptA
+    P    = origPatch(Si_idx)
+    nBuf = 0
+    ! 2026-08-22 fix: sort by true Bezier parameter, not chord projection --
+    ! see the matching note in collectEdgeVerts. No direction ambiguity here:
+    ! Si and Sj are sub-patches of the SAME original patch P, so increasing u/v
+    ! always runs ptA->ptB (subdivision never reverses an axis' orientation).
 
     ! UV boundary value and range for this edge of Si
     select case (eP_Si)
@@ -1232,13 +1283,18 @@ contains
       end select
       if (.not. onEdge) cycle
 
-      ! Extract the 2 corners of Sj that lie on the shared boundary
+      ! Extract the 2 corners of Sj that lie on the shared boundary, and their
+      ! true parameter along the edge (p1 for pt1, p2 for pt2).
       ! Si's e=1 (left) is adjacent to Sj's e=2 (right), etc.
       select case (eP_Si)
         case(1);  pt1 = curPts(i,4,1,:);  pt2 = curPts(i,4,4,:)
+                  p1  = uvRange(i,3);     p2  = uvRange(i,4)
         case(2);  pt1 = curPts(i,1,1,:);  pt2 = curPts(i,1,4,:)
+                  p1  = uvRange(i,3);     p2  = uvRange(i,4)
         case(3);  pt1 = curPts(i,1,4,:);  pt2 = curPts(i,4,4,:)
+                  p1  = uvRange(i,1);     p2  = uvRange(i,2)
         case(4);  pt1 = curPts(i,1,1,:);  pt2 = curPts(i,4,1,:)
+                  p1  = uvRange(i,1);     p2  = uvRange(i,2)
       end select
 
       isDup = .false.
@@ -1246,7 +1302,7 @@ contains
         if (norm2(buf(si,:) - pt1) < EV_TOL) then;  isDup = .true.;  exit;  end if
       end do
       if (.not. isDup .and. nBuf < size(buf,1)) then
-        nBuf = nBuf + 1;  buf(nBuf,:) = pt1
+        nBuf = nBuf + 1;  buf(nBuf,:) = pt1;  paramArr(nBuf) = p1
       end if
 
       isDup = .false.
@@ -1254,7 +1310,7 @@ contains
         if (norm2(buf(si,:) - pt2) < EV_TOL) then;  isDup = .true.;  exit;  end if
       end do
       if (.not. isDup .and. nBuf < size(buf,1)) then
-        nBuf = nBuf + 1;  buf(nBuf,:) = pt2
+        nBuf = nBuf + 1;  buf(nBuf,:) = pt2;  paramArr(nBuf) = p2
       end if
     end do
 
@@ -1263,18 +1319,15 @@ contains
       return
     end if
 
-    ! Insertion sort by dot product along edge direction ptA→ptB
-    do si = 1, nBuf
-      dotArr(si) = dot_product(buf(si,:) - ptA, edgeDir)
-    end do
+    ! Insertion sort by true Bezier parameter along the edge
     do si = 2, nBuf
-      tmpV = buf(si,:);  tmpD = dotArr(si)
+      tmpV = buf(si,:);  tmpD = paramArr(si)
       i = si - 1
-      do while (i >= 1 .and. dotArr(i) > tmpD)
-        buf(i+1,:) = buf(i,:);  dotArr(i+1) = dotArr(i)
+      do while (i >= 1 .and. paramArr(i) > tmpD)
+        buf(i+1,:) = buf(i,:);  paramArr(i+1) = paramArr(i)
         i = i - 1
       end do
-      buf(i+1,:) = tmpV;  dotArr(i+1) = tmpD
+      buf(i+1,:) = tmpV;  paramArr(i+1) = tmpD
     end do
 
   end subroutine collectIntraPatchEdgeVerts
@@ -1292,14 +1345,28 @@ contains
 
     integer(shortInt) :: i, si
     logical(defBool)  :: onEdge, isDup
-    real(defReal), dimension(3) :: pt1, pt2, edgeDir, tmpV
-    real(defReal), dimension(size(buf,1)) :: dotArr
-    real(defReal) :: tmpD
+    real(defReal), dimension(3) :: pt1, pt2, tmpV
+    real(defReal), dimension(size(buf,1)) :: paramArr
+    real(defReal) :: tmpD, p1, p2
+    integer(shortInt) :: iMin, iMax
     real(defReal), parameter :: EV_TOL = 1.0E-10_defReal
 
     nBuf = 0
-    edgeDir = ptB - ptA
 
+    ! 2026-08-22 fix (bezierVolume_status.md Section 13/14): sorting by
+    ! projection onto the straight chord ptA-ptB (the previous approach) fails
+    ! whenever the true shared Bezier edge is not monotonic along that chord --
+    ! e.g. a rim patch whose control polygon loops back in one coordinate while
+    ! bulging out in another (confirmed on the teapot's body-rim/lid-saucer
+    ! seam: sorting by chord projection put an interior point BEFORE the corner
+    ! it should follow, leaving a gap at one segment and a duplicated triangle
+    ! at another). Each candidate point's true position along the edge is
+    ! already known exactly: it is the sub-patch's own u or v range boundary
+    ! (whichever axis varies along this edge), a monotonic Bezier parameter
+    ! that is correct regardless of how the physical curve bends. Direction
+    ! (whether increasing parameter runs ptA->ptB or ptB->ptA) is not known a
+    ! priori -- adjPatch's own parameterisation may run either way relative to
+    ! ptA/ptB -- so it is resolved once, after collection, from the data itself.
     do i = 1, nCur
       if (origPatch(i) /= adjPatch) cycle
 
@@ -1314,9 +1381,13 @@ contains
 
       select case (edgeOnAdj)
         case(1);  pt1 = curPts(i,1,1,:);  pt2 = curPts(i,1,4,:)
+                  p1  = uvRange(i,3);     p2  = uvRange(i,4)
         case(2);  pt1 = curPts(i,4,1,:);  pt2 = curPts(i,4,4,:)
+                  p1  = uvRange(i,3);     p2  = uvRange(i,4)
         case(3);  pt1 = curPts(i,1,1,:);  pt2 = curPts(i,4,1,:)
+                  p1  = uvRange(i,1);     p2  = uvRange(i,2)
         case(4);  pt1 = curPts(i,1,4,:);  pt2 = curPts(i,4,4,:)
+                  p1  = uvRange(i,1);     p2  = uvRange(i,2)
       end select
 
       isDup = .false.
@@ -1324,7 +1395,7 @@ contains
         if (norm2(buf(si,:) - pt1) < EV_TOL) then;  isDup = .true.;  exit;  end if
       end do
       if (.not. isDup .and. nBuf < size(buf,1)) then
-        nBuf = nBuf + 1;  buf(nBuf,:) = pt1
+        nBuf = nBuf + 1;  buf(nBuf,:) = pt1;  paramArr(nBuf) = p1
       end if
 
       isDup = .false.
@@ -1332,7 +1403,7 @@ contains
         if (norm2(buf(si,:) - pt2) < EV_TOL) then;  isDup = .true.;  exit;  end if
       end do
       if (.not. isDup .and. nBuf < size(buf,1)) then
-        nBuf = nBuf + 1;  buf(nBuf,:) = pt2
+        nBuf = nBuf + 1;  buf(nBuf,:) = pt2;  paramArr(nBuf) = p2
       end if
     end do
 
@@ -1342,18 +1413,28 @@ contains
       return
     end if
 
-    ! Insertion sort by dot product with edge direction (ptA → ptB)
-    do si = 1, nBuf
-      dotArr(si) = dot_product(buf(si,:) - ptA, edgeDir)
-    end do
+    ! Resolve direction: locate the collected points with the smallest and
+    ! largest true parameter (the two true edge endpoints) and check which one
+    ! is spatially closer to ptA. If it is the max-parameter one, adjPatch's
+    ! parameterisation runs opposite to ptA->ptB, so negate before sorting.
+    iMin = 1;  iMax = 1
     do si = 2, nBuf
-      tmpV = buf(si,:);  tmpD = dotArr(si)
+      if (paramArr(si) < paramArr(iMin)) iMin = si
+      if (paramArr(si) > paramArr(iMax)) iMax = si
+    end do
+    if (norm2(buf(iMax,:) - ptA) < norm2(buf(iMin,:) - ptA)) then
+      paramArr(1:nBuf) = -paramArr(1:nBuf)
+    end if
+
+    ! Insertion sort by true Bezier parameter along the edge
+    do si = 2, nBuf
+      tmpV = buf(si,:);  tmpD = paramArr(si)
       i = si - 1
-      do while (i >= 1 .and. dotArr(i) > tmpD)
-        buf(i+1,:) = buf(i,:);  dotArr(i+1) = dotArr(i)
+      do while (i >= 1 .and. paramArr(i) > tmpD)
+        buf(i+1,:) = buf(i,:);  paramArr(i+1) = paramArr(i)
         i = i - 1
       end do
-      buf(i+1,:) = tmpV;  dotArr(i+1) = tmpD
+      buf(i+1,:) = tmpV;  paramArr(i+1) = tmpD
     end do
 
   end subroutine collectEdgeVerts
