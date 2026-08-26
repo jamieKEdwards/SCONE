@@ -18,6 +18,7 @@ add_sources(./surface_inter.f90
             ./deepLSSurface_class.f90
             ./bezierShape_class.f90
             ./bezierTwist_class.f90
+            ./bezierPatch_func.f90
             ./bezierVolume_class.f90
            )
 
