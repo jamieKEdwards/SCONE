@@ -4,9 +4,8 @@ module neuralSurface_class
   use universalVariables, only : INF
   use genericProcedures,  only : fatalError, numToChar
   use dictionary_class,   only : dictionary
-  use surface_inter,        only : surface
-  use mlpInference_mod,     only : trainedMLP
-  use mlpWeightIO_mod,      only : readMLPWeights
+  use surface_inter,      only : surface, kill_super => kill
+  use trainedMLP_class,   only : trainedMLP
 
   implicit none
   private
@@ -16,40 +15,49 @@ module neuralSurface_class
   !!
   !! Neural SDF surface
   !!
-  !! Represents an implicit surface defined by a trained MLP (Multi-Layer Perceptron).
-  !! The MLP approximates a signed distance function F(r):
+  !! An implicit surface defined by a trained MLP that approximates a signed
+  !! distance function F(r):
   !!   F(r) < 0  =>  r is inside the surface  (negative halfspace)
   !!   F(r) > 0  =>  r is outside the surface (positive halfspace)
   !!
-  !! Intended for use with delta (Woodcock) tracking only.
-  !! distance() returns INF -- not valid for surface-tracking modes.
+  !! Intended for delta (Woodcock) tracking only: distance() returns INF, so it
+  !! is not valid for surface-tracking modes. going() uses a single forward
+  !! finite-difference step along the particle direction to resolve the
+  !! halfspace on the surface boundary.
   !!
-  !! going() uses a single forward finite-difference step along the
-  !! particle direction to resolve the halfspace on the surface boundary.
-  !!
-  !! Memory management: weights are freed by the FINAL subroutine when the
-  !! object is deallocated. init() will kill any existing MLP before loading
-  !! new weights, so re-initialisation is safe after kill().
-  !!
-  !! Sample dictionary input:
-  !!   ns { type neuralSurface;
-  !!        id 1;
-  !!        weightFile "sphere_weights.bin";
-  !!      }
+  !! Memory: the MLP weight arrays are allocatable components of the trainedMLP
+  !! and are freed by kill() and, as a safety net, by the finaliser. init()
+  !! kills any existing MLP before loading, so re-initialisation is safe.
   !!
   !! See misclassClerk_class (Tallies/TallyClerks) for a halfspace
   !! misclassification diagnostic against a reference region.
   !!
   !! Private Members:
-  !!   mlp        -> Trained MLP loaded from weight file at init time
-  !!   geomScale  -> Geometric scale factor: physical coords are divided by this
-  !!                 before MLP evaluation, allowing a unit-sphere weight file to
-  !!                 represent a sphere of arbitrary radius. Default 1.0 (no scaling).
+  !!   mlp       -> Trained MLP loaded from the weight file at init time
+  !!   geomScale -> Geometric scale factor: physical coordinates are divided by
+  !!                this before MLP evaluation, letting a unit-sphere weight
+  !!                file represent a sphere of arbitrary radius. Default 1.0.
+  !!
+  !! Interface:
+  !!   myType      -> Return surface type name
+  !!   init        -> Build from a dictionary (reads the weight file)
+  !!   boundingBox -> MLP training box scaled by geomScale
+  !!   evaluate    -> Signed surface value at a point
+  !!   distance    -> Stub (INF); delta-tracking-only surface
+  !!   going       -> Finite-difference halfspace resolution on the boundary
+  !!   kill        -> Free the MLP and reset to the uninitialised state
+  !!
+  !! Sample Dictionary Input:
+  !!   ns { type neuralSurface;
+  !!        id 1;
+  !!        weightFile "sphere_weights.bin";
+  !!        # geometricScale 1.0; #
+  !!      }
   !!
   type, public, extends(surface) :: neuralSurface
     private
-    type(trainedMLP)           :: mlp
-    real(defReal)              :: geomScale   = ONE
+    type(trainedMLP) :: mlp
+    real(defReal)    :: geomScale = ONE
   contains
     procedure :: myType
     procedure :: init
@@ -57,6 +65,7 @@ module neuralSurface_class
     procedure :: evaluate
     procedure :: distance
     procedure :: going
+    procedure :: kill
     final     :: finaliseNeuralSurface
   end type neuralSurface
 
@@ -76,22 +85,22 @@ contains
   end function myType
 
   !!
-  !! Initialise from dictionary
+  !! Initialise from a dictionary
   !!
-  !! Reads 'id' and 'weightFile' entries from the dictionary.
-  !! Loads the MLP from the binary or text weight file at 'weightFile'.
-  !! If an MLP is already loaded (e.g. after kill()), it is released first.
+  !! Reads 'id' and 'weightFile', loads the MLP from that binary or text weight
+  !! file, and reads the optional 'geometricScale'. Any MLP already loaded (e.g.
+  !! after kill()) is released first.
   !!
   !! See surface_inter for details
   !!
   !! Errors:
-  !!   fatalError if id < 1 or weight file cannot be read
+  !!   fatalError if id < 1, geometricScale <= 0, or the weight file cannot be read
   !!
   subroutine init(self, dict)
     class(neuralSurface), intent(inout) :: self
     class(dictionary), intent(in)       :: dict
-    integer(shortInt)             :: id
-    character(pathLen)            :: weightFile
+    integer(shortInt)                   :: id
+    character(pathLen)                  :: weightFile
     character(100), parameter :: Here = 'init (neuralSurface_class.f90)'
 
     call dict % get(id, 'id')
@@ -102,25 +111,20 @@ contains
     ! Release any existing MLP weight arrays before (re-)loading
     if (self % mlp % isInit) call self % mlp % kill()
 
-    call readMLPWeights(self % mlp, trim(weightFile))
+    call self % mlp % load(trim(weightFile))
     call self % setId(id)
 
-    ! Optional geometric scale: divides physical coords before MLP evaluation.
-    ! Allows a unit-sphere weight file to represent a sphere of arbitrary radius.
-    if (dict % isPresent('geometricScale')) then
-      call dict % get(self % geomScale, 'geometricScale')
-      if (self % geomScale <= ZERO) &
-        call fatalError(Here, 'geometricScale must be positive')
-    else
-      self % geomScale = ONE
-    end if
+    ! Optional geometric scale: divides physical coordinates before MLP
+    ! evaluation, letting a unit-sphere weight file represent any radius.
+    call dict % getOrDefault(self % geomScale, 'geometricScale', ONE)
+    if (self % geomScale <= ZERO) call fatalError(Here, 'geometricScale must be positive')
 
   end subroutine init
 
   !!
-  !! Return axis-aligned bounding box
+  !! Return the axis-aligned bounding box
   !!
-  !! Returns the MLP training bounding box as the surface bbox.
+  !! The MLP training bounding box scaled by geomScale.
   !!
   !! See surface_inter for details
   !!
@@ -136,7 +140,8 @@ contains
   !!
   !! Evaluate surface expression c = F(r)
   !!
-  !! Delegates to the pure MLP forward pass.
+  !! Delegates to the pure MLP forward pass, scaling world coordinates by
+  !! 1 / geomScale on the way in and the result by geomScale on the way out.
   !! Negative return = inside (negative halfspace).
   !!
   !! See surface_inter for details
@@ -153,9 +158,8 @@ contains
   !!
   !! Return distance to the surface
   !!
-  !! Stub: always returns INF.
-  !! neuralSurface is for delta (Woodcock) tracking only;
-  !! analytic distance is not available for an arbitrary MLP.
+  !! Stub: always INF. neuralSurface is for delta (Woodcock) tracking only;
+  !! an analytic distance is not available for an arbitrary MLP.
   !!
   !! See surface_inter for details
   !!
@@ -170,10 +174,10 @@ contains
   end function distance
 
   !!
-  !! Returns TRUE if particle is going into +ve halfspace
+  !! Return TRUE if the particle is going into the +ve halfspace
   !!
-  !! Uses a single forward finite-difference step along u.
-  !! If F(r + FD_STEP * u) > 0 the particle is moving toward the +ve halfspace.
+  !! Uses a single forward finite-difference step along u: the particle is
+  !! moving toward the +ve halfspace if F(r + FD_STEP * u) > 0.
   !!
   !! See surface_inter for details
   !!
@@ -184,21 +188,34 @@ contains
     logical(defBool)                        :: hs
     real(defReal), parameter :: FD_STEP = 1.0e-7_defReal
 
-    hs = self % mlp % evaluate((r + FD_STEP * u) / self % geomScale) > ZERO
+    hs = self % evaluate(r + FD_STEP * u) > ZERO
 
   end function going
 
   !!
-  !! Finaliser -- releases MLP weight arrays
+  !! Return to the uninitialised state and free the MLP weight arrays
   !!
-  !! Called automatically by Fortran when a neuralSurface object is
-  !! deallocated or goes out of scope. Ensures weight arrays are freed
-  !! even if kill() was not explicitly called.
+  !! See surface_inter for details
+  !!
+  elemental subroutine kill(self)
+    class(neuralSurface), intent(inout) :: self
+
+    call kill_super(self)
+    call self % mlp % kill()
+    self % geomScale = ONE
+
+  end subroutine kill
+
+  !!
+  !! Finaliser: a safety net that frees the MLP if kill() was never called
+  !!
+  !! Called automatically by Fortran when a neuralSurface is deallocated or
+  !! goes out of scope.
   !!
   subroutine finaliseNeuralSurface(self)
     type(neuralSurface), intent(inout) :: self
 
-    if (self % mlp % isInit) call self % mlp % kill()
+    call self % kill()
 
   end subroutine finaliseNeuralSurface
 

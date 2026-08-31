@@ -1,7 +1,7 @@
-module mlpInference_test
+module trainedMLP_test
 
   use numPrecision
-  use mlpInference_mod, only : trainedMLP, ACTIVATION_LEAKYRELU, ACTIVATION_RELU, &
+  use trainedMLP_class, only : trainedMLP, ACTIVATION_LEAKYRELU, ACTIVATION_RELU, &
                                 ACTIVATION_TANH, MLP_MAX_DIM
   use funit
 
@@ -242,4 +242,4 @@ contains
 
   end subroutine testReLUActivation
 
-end module mlpInference_test
+end module trainedMLP_test

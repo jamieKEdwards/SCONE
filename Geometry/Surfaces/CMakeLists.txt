@@ -11,10 +11,8 @@ add_sources(./surface_inter.f90
             ./CompositeSurfaces/squareCylinder_class.f90
             ./surfaceFactory_func.f90
             ./surfaceShelf_class.f90
-            ./mlpInference_mod.f90
-            ./mlpWeightIO_mod.f90
+            ./trainedMLP_class.f90
             ./neuralSurface_class.f90
-            ./deepLSWeightIO_mod.f90
             ./deepLSSurface_class.f90
             ./bezierShape_class.f90
             ./bezierTwist_class.f90
@@ -33,5 +31,7 @@ add_unit_tests( ./Tests/sphere_test.f90
                 ./Tests/truncCone_test.f90
                 ./Tests/wedge_test.f90
                 ./Tests/surfaceShelf_test.f90
-                ./Tests/mlpInference_test.f90
+                ./Tests/trainedMLP_test.f90
+                ./Tests/neuralSurface_test.f90
+                ./Tests/deepLSSurface_test.f90
               )
